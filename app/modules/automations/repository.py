@@ -145,11 +145,7 @@ class AutomationsRepository:
             .order_by(AutomationJobAccount.account_id.asc())
         )
         model_stmt = select(AutomationJob.model).distinct().order_by(AutomationJob.model.asc())
-        type_stmt = (
-            select(AutomationJob.schedule_type)
-            .distinct()
-            .order_by(AutomationJob.schedule_type.asc())
-        )
+        type_stmt = select(AutomationJob.schedule_type).distinct().order_by(AutomationJob.schedule_type.asc())
         status_stmt = select(AutomationJob.enabled).distinct()
         if conditions:
             clause = and_(*conditions)
@@ -163,12 +159,7 @@ class AutomationsRepository:
         type_rows = await self._session.execute(type_stmt)
         status_rows = await self._session.execute(status_stmt)
 
-        statuses = sorted(
-            {
-                "enabled" if bool(value) else "disabled"
-                for (value,) in status_rows.all()
-            }
-        )
+        statuses = sorted({"enabled" if bool(value) else "disabled" for (value,) in status_rows.all()})
         return AutomationJobsFilterOptionsRecord(
             account_ids=[value for (value,) in account_ids_rows.all() if value],
             models=[value for (value,) in model_rows.all() if value],
@@ -295,9 +286,7 @@ class AutomationsRepository:
         if prompt is not None:
             job.prompt = prompt
         if account_ids is not None:
-            await self._session.execute(
-                delete(AutomationJobAccount).where(AutomationJobAccount.job_id == job.id)
-            )
+            await self._session.execute(delete(AutomationJobAccount).where(AutomationJobAccount.job_id == job.id))
             await self._session.flush()
             self._session.add_all(
                 [
@@ -577,19 +566,16 @@ class AutomationsRepository:
             triggers=triggers,
             job_ids=job_ids,
         )
-        filtered_runs_stmt = (
-            select(
-                AutomationRun.id.label("run_id"),
-                AutomationRun.cycle_key.label("cycle_key"),
-                AutomationRun.status.label("status"),
-                AutomationRun.account_id.label("account_id"),
-                AutomationRun.started_at.label("started_at"),
-                AutomationRun.scheduled_for.label("scheduled_for"),
-                AutomationRun.cycle_window_end.label("cycle_window_end"),
-                AutomationRun.cycle_expected_accounts.label("cycle_expected_accounts"),
-            )
-            .join(AutomationJob, AutomationJob.id == AutomationRun.job_id)
-        )
+        filtered_runs_stmt = select(
+            AutomationRun.id.label("run_id"),
+            AutomationRun.cycle_key.label("cycle_key"),
+            AutomationRun.status.label("status"),
+            AutomationRun.account_id.label("account_id"),
+            AutomationRun.started_at.label("started_at"),
+            AutomationRun.scheduled_for.label("scheduled_for"),
+            AutomationRun.cycle_window_end.label("cycle_window_end"),
+            AutomationRun.cycle_expected_accounts.label("cycle_expected_accounts"),
+        ).join(AutomationJob, AutomationJob.id == AutomationRun.job_id)
         if conditions:
             filtered_runs_stmt = filtered_runs_stmt.where(and_(*conditions))
         filtered_runs = filtered_runs_stmt.subquery()
@@ -611,18 +597,16 @@ class AutomationsRepository:
         )
         cycle_runs = cycle_runs_stmt.subquery()
 
-        ranked_stmt = (
-            select(
-                filtered_runs.c.run_id,
-                filtered_runs.c.cycle_key,
-                filtered_runs.c.status.label("fallback_status"),
-                func.row_number()
-                .over(
-                    partition_by=filtered_runs.c.cycle_key,
-                    order_by=(filtered_runs.c.started_at.desc(), filtered_runs.c.run_id.desc()),
-                )
-                .label("cycle_rank"),
+        ranked_stmt = select(
+            filtered_runs.c.run_id,
+            filtered_runs.c.cycle_key,
+            filtered_runs.c.status.label("fallback_status"),
+            func.row_number()
+            .over(
+                partition_by=filtered_runs.c.cycle_key,
+                order_by=(filtered_runs.c.started_at.desc(), filtered_runs.c.run_id.desc()),
             )
+            .label("cycle_rank"),
         )
         ranked = ranked_stmt.subquery()
 
@@ -893,9 +877,7 @@ class AutomationsRepository:
             matching_account_links = select(AutomationJobAccount.job_id).where(
                 AutomationJobAccount.account_id.in_(normalized_accounts)
             )
-            job_has_no_account_links = ~exists(
-                select(1).where(AutomationJobAccount.job_id == AutomationJob.id)
-            )
+            job_has_no_account_links = ~exists(select(1).where(AutomationJobAccount.job_id == AutomationJob.id))
             conditions.append(
                 or_(
                     AutomationJob.id.in_(matching_account_links),

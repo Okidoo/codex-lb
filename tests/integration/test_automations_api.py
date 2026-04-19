@@ -473,9 +473,7 @@ async def test_automations_run_now_all_accounts_executes_all_accounts(async_clie
         request_logs_repository = RequestLogsRepository(session)
         recent_logs, _ = await request_logs_repository.list_recent(limit=200, since=started_at)
         observed = {
-            log.account_id
-            for log in recent_logs
-            if log.transport == "automation" and log.model == "gpt-5.3-codex"
+            log.account_id for log in recent_logs if log.transport == "automation" and log.model == "gpt-5.3-codex"
         }
         expected = {account.id for account in accounts}
         assert expected.issubset(observed)
@@ -545,9 +543,7 @@ async def test_automations_run_now_reactivates_elapsed_rate_limited_account(asyn
         request_logs_repository = RequestLogsRepository(session)
         recent_logs, _ = await request_logs_repository.list_recent(limit=200, since=started_at)
         observed = {
-            log.account_id
-            for log in recent_logs
-            if log.transport == "automation" and log.model == "gpt-5.3-codex"
+            log.account_id for log in recent_logs if log.transport == "automation" and log.model == "gpt-5.3-codex"
         }
         assert account.id in observed
 
@@ -634,10 +630,7 @@ async def test_automations_due_run_spreads_accounts_with_threshold(monkeypatch):
         assert len(runs) == 3
 
         due_slot = datetime(now.year, now.month, now.day, now.hour, now.minute)
-        offsets = [
-            int((run.scheduled_for - due_slot).total_seconds())
-            for run in runs
-        ]
+        offsets = [int((run.scheduled_for - due_slot).total_seconds()) for run in runs]
         assert all(1 <= offset <= 11 * 60 for offset in offsets)
         assert len(set(offsets)) == len(offsets)
 

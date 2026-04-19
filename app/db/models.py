@@ -836,9 +836,7 @@ class AutomationJob(Base):
 
 class AutomationJobAccount(Base):
     __tablename__ = "automation_job_accounts"
-    __table_args__ = (
-        UniqueConstraint("job_id", "position", name="uq_automation_job_accounts_position"),
-    )
+    __table_args__ = (UniqueConstraint("job_id", "position", name="uq_automation_job_accounts_position"),)
 
     job_id: Mapped[str] = mapped_column(
         String,

@@ -1023,26 +1023,24 @@ class AutomationsService:
         expected_account_ids: list[str] = []
         seen_account_ids: set[str] = set()
         for cycle_run in sorted(
-            (entry for entry in cycle_runs if entry.account_id),
+            cycle_runs,
             key=lambda entry: (entry.scheduled_for, entry.account_id or "", entry.id),
         ):
-            if cycle_run.account_id in seen_account_ids:
+            account_id = cycle_run.account_id
+            if not account_id:
                 continue
-            seen_account_ids.add(cycle_run.account_id)
-            expected_account_ids.append(cycle_run.account_id)
+            if account_id in seen_account_ids:
+                continue
+            seen_account_ids.add(account_id)
+            expected_account_ids.append(account_id)
 
         if not expected_account_ids and run.account_id:
             expected_account_ids = [run.account_id]
         scheduled_for_by_account_id = {
-            account_id: entry.scheduled_for
-            for account_id, entry in latest_run_by_account_id.items()
+            account_id: entry.scheduled_for for account_id, entry in latest_run_by_account_id.items()
         }
         expected_set = set(expected_account_ids)
-        observed_only = [
-            account_id
-            for account_id in latest_run_by_account_id
-            if account_id not in expected_set
-        ]
+        observed_only = [account_id for account_id in latest_run_by_account_id if account_id not in expected_set]
         all_account_ids = [*expected_account_ids, *observed_only]
 
         account_states: list[AutomationRunAccountStateData] = []
@@ -1076,7 +1074,7 @@ class AutomationsService:
                     error_code=observed_run.error_code,
                     error_message=observed_run.error_message,
                 )
-                )
+            )
 
         expected_accounts_hint = max(
             [entry.cycle_expected_accounts or 0 for entry in cycle_runs],
@@ -1137,9 +1135,7 @@ class AutomationsService:
             schedule_days=job.schedule_days,
         )
         cycle_key = (
-            run.cycle_key.strip()
-            if run.cycle_key and run.cycle_key.strip()
-            else _scheduled_cycle_key(job.id, due_slot)
+            run.cycle_key.strip() if run.cycle_key and run.cycle_key.strip() else _scheduled_cycle_key(job.id, due_slot)
         )
         if cycle_cache is not None and cycle_key in cycle_cache:
             return cycle_cache[cycle_key]
@@ -1163,9 +1159,7 @@ class AutomationsService:
 
         if now_utc <= window_end:
             dispatch_plan = await self._build_scheduled_dispatch_plan(job, due_slot)
-            scheduled_for_by_account_id = {
-                account_id: scheduled_for for account_id, scheduled_for in dispatch_plan
-            }
+            scheduled_for_by_account_id = {account_id: scheduled_for for account_id, scheduled_for in dispatch_plan}
             expected_account_ids = list(scheduled_for_by_account_id.keys())
         else:
             expected_account_ids = []
@@ -1183,9 +1177,7 @@ class AutomationsService:
             expected_account_ids = [run.account_id]
             scheduled_for_by_account_id[run.account_id] = run.scheduled_for
         observed_account_ids = [
-            account_id
-            for account_id in latest_run_by_account_id
-            if account_id not in expected_account_ids
+            account_id for account_id in latest_run_by_account_id if account_id not in expected_account_ids
         ]
         all_account_ids = [*expected_account_ids, *observed_account_ids]
 
@@ -1484,9 +1476,7 @@ class AutomationsService:
         candidate_accounts: list[Account]
         if account_ids:
             candidate_accounts = [
-                accounts_by_id[account_id]
-                for account_id in account_ids
-                if account_id in accounts_by_id
+                accounts_by_id[account_id] for account_id in account_ids if account_id in accounts_by_id
             ]
         else:
             candidate_accounts = accounts
@@ -1801,9 +1791,7 @@ def _extract_proxy_error(exc: ProxyResponseError) -> tuple[str, str]:
             code_value = error.get("code")
             message_value = error.get("message")
             code = (
-                code_value.strip().lower()
-                if isinstance(code_value, str) and code_value.strip()
-                else "upstream_error"
+                code_value.strip().lower() if isinstance(code_value, str) and code_value.strip() else "upstream_error"
             )
             if isinstance(message_value, str) and message_value.strip():
                 return code, message_value.strip()
