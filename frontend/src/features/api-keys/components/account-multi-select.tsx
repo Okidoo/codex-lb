@@ -22,8 +22,11 @@ export type AccountMultiSelectProps = {
   value: string[];
   onChange: (value: string[]) => void;
   placeholder?: string;
+  triggerId?: string;
+  ariaInvalid?: boolean;
+  ariaDescribedBy?: string;
+  triggerClassName?: string;
 };
-
 type LimitChip = {
   key: string;
   label: string;
@@ -122,6 +125,10 @@ export function AccountMultiSelect({
   value,
   onChange,
   placeholder = "All accounts",
+  triggerId,
+  ariaInvalid = false,
+  ariaDescribedBy,
+  triggerClassName,
 }: AccountMultiSelectProps) {
   const { accountsQuery } = useAccounts();
   const accounts = useMemo(() => accountsQuery.data ?? [], [accountsQuery.data]);
@@ -183,7 +190,10 @@ export function AccountMultiSelect({
           <Button
             type="button"
             variant="outline"
-            className="w-full justify-between font-normal"
+            id={triggerId}
+            aria-invalid={ariaInvalid}
+            aria-describedby={ariaDescribedBy}
+            className={cn("w-full justify-between font-normal", triggerClassName)}
             disabled={accountsQuery.isLoading}
           >
             <span className="truncate text-left">
