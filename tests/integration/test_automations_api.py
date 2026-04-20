@@ -10,7 +10,7 @@ from app.core.clients.proxy import ProxyResponseError
 from app.core.crypto import TokenEncryptor
 from app.core.errors import openai_error
 from app.core.utils.time import naive_utc_to_epoch, utcnow
-from app.db.models import Account, AccountStatus, AutomationRun
+from app.db.models import Account, AccountStatus, AutomationJob, AutomationRun
 from app.db.session import SessionLocal
 from app.modules.accounts.repository import AccountsRepository
 from app.modules.automations.repository import AutomationsRepository
@@ -75,6 +75,12 @@ async def _run_due_jobs(*, now_utc: datetime | None = None) -> int:
         request_logs_repository = RequestLogsRepository(session)
         service = AutomationsService(automations_repository, accounts_repository, request_logs_repository)
         return await service.run_due_jobs(now_utc=now_utc)
+
+
+async def _set_job_updated_at(job_id: str, updated_at: datetime) -> None:
+    async with SessionLocal() as session:
+        await session.execute(update(AutomationJob).where(AutomationJob.id == job_id).values(updated_at=updated_at))
+        await session.commit()
 
 
 @pytest.mark.asyncio
@@ -579,6 +585,7 @@ async def test_automations_due_run_is_claimed_once_per_slot(db_setup, monkeypatc
             prompt="ping",
             account_ids=[accounts[0].id],
         )
+        await _set_job_updated_at(job.id, now)
 
         executed_first = await service.run_due_jobs(now_utc=now + timedelta(seconds=10))
         executed_second = await service.run_due_jobs(now_utc=now + timedelta(seconds=20))
@@ -623,6 +630,7 @@ async def test_automations_due_run_spreads_accounts_with_threshold(db_setup, mon
             prompt="ping",
             account_ids=[account.id for account in accounts],
         )
+        await _set_job_updated_at(job.id, now)
 
         executed = await service.run_due_jobs(now_utc=now + timedelta(minutes=30))
 
@@ -670,6 +678,7 @@ async def test_automations_due_run_freezes_all_accounts_snapshot_for_cycle(db_se
             prompt="ping",
             account_ids=[accounts[0].id, accounts[1].id, accounts[2].id],
         )
+        await _set_job_updated_at(job.id, now)
 
         executed_first = await service.run_due_jobs(now_utc=now)
         assert executed_first >= 1
@@ -721,6 +730,7 @@ async def test_automations_due_run_freezes_empty_cycle_after_late_account_reacti
             prompt="ping",
             account_ids=[account.id],
         )
+        await _set_job_updated_at(job.id, now)
 
         executed_first = await service.run_due_jobs(now_utc=now + timedelta(seconds=5))
         assert executed_first == 0
@@ -777,6 +787,7 @@ async def test_automations_due_run_keeps_frozen_dispatch_plan_after_threshold_ed
             prompt="ping",
             account_ids=[account.id for account in accounts],
         )
+        await _set_job_updated_at(job.id, now)
 
         executed_first = await service.run_due_jobs(now_utc=now + timedelta(seconds=5))
         assert executed_first == 1
@@ -786,6 +797,7 @@ async def test_automations_due_run_keeps_frozen_dispatch_plan_after_threshold_ed
             schedule_threshold_minutes=1,
         )
         assert updated_job is not None
+        await _set_job_updated_at(job.id, now + timedelta(minutes=1))
 
         representative_run = (await automations_repository.list_runs(job.id, limit=10))[0]
         details = await service.get_run_details(representative_run.id)
@@ -845,6 +857,7 @@ async def test_automations_due_run_does_not_backfill_previous_day_before_today_s
             prompt="ping",
             account_ids=[account.id for account in accounts],
         )
+        await _set_job_updated_at(job.id, now)
 
         executed_before_slot = await service.run_due_jobs(now_utc=now)
         assert executed_before_slot == 0
@@ -852,6 +865,242 @@ async def test_automations_due_run_does_not_backfill_previous_day_before_today_s
 
         executed_after_slot = await service.run_due_jobs(now_utc=now + timedelta(hours=1, minutes=5))
         assert executed_after_slot == 2
+
+
+@pytest.mark.asyncio
+async def test_automations_due_run_does_not_execute_same_day_when_job_is_created_after_slot(db_setup, monkeypatch):
+    del db_setup
+    account = (await _create_accounts("auto-created-after-slot"))[0]
+    now = datetime(2026, 4, 20, 12, 0, 0)
+
+    async def _fake_compact(*_args, **_kwargs):
+        return SimpleNamespace()
+
+    monkeypatch.setattr("app.modules.automations.service.core_compact_responses", _fake_compact)
+
+    async with SessionLocal() as session:
+        automations_repository = AutomationsRepository(session)
+        accounts_repository = AccountsRepository(session)
+        service = AutomationsService(automations_repository, accounts_repository)
+
+        job = await automations_repository.create_job(
+            name="Created after slot",
+            enabled=True,
+            include_paused_accounts=False,
+            schedule_type="daily",
+            schedule_time="06:00",
+            schedule_timezone="UTC",
+            schedule_days=["mon", "tue", "wed", "thu", "fri", "sat", "sun"],
+            schedule_threshold_minutes=0,
+            model="gpt-5.3-codex",
+            reasoning_effort=None,
+            prompt="ping",
+            account_ids=[account.id],
+        )
+        await _set_job_updated_at(job.id, now)
+
+        executed = await service.run_due_jobs(now_utc=now)
+        assert executed == 0
+
+        executed_next_day = await service.run_due_jobs(now_utc=now + timedelta(days=1, minutes=1))
+        assert executed_next_day == 1
+
+        runs = await automations_repository.list_runs(job.id, limit=10)
+        assert len(runs) == 1
+        assert runs[0].trigger == "scheduled"
+        assert runs[0].scheduled_for == datetime(2026, 4, 21, 6, 0, 0)
+
+
+@pytest.mark.asyncio
+async def test_automations_due_run_does_not_execute_same_day_when_job_is_updated_after_slot(db_setup, monkeypatch):
+    del db_setup
+    account = (await _create_accounts("auto-updated-after-slot"))[0]
+    now = datetime(2026, 4, 20, 12, 0, 0)
+
+    async def _fake_compact(*_args, **_kwargs):
+        return SimpleNamespace()
+
+    monkeypatch.setattr("app.modules.automations.service.core_compact_responses", _fake_compact)
+
+    async with SessionLocal() as session:
+        automations_repository = AutomationsRepository(session)
+        accounts_repository = AccountsRepository(session)
+        service = AutomationsService(automations_repository, accounts_repository)
+
+        job = await automations_repository.create_job(
+            name="Updated after slot",
+            enabled=True,
+            include_paused_accounts=False,
+            schedule_type="daily",
+            schedule_time="23:00",
+            schedule_timezone="UTC",
+            schedule_days=["mon", "tue", "wed", "thu", "fri", "sat", "sun"],
+            schedule_threshold_minutes=0,
+            model="gpt-5.3-codex",
+            reasoning_effort=None,
+            prompt="ping",
+            account_ids=[account.id],
+        )
+        await _set_job_updated_at(job.id, now - timedelta(hours=1))
+
+        executed_before_update = await service.run_due_jobs(now_utc=now)
+        assert executed_before_update == 0
+
+        updated = await automations_repository.update_job(job.id, schedule_time="06:00")
+        assert updated is not None
+        await _set_job_updated_at(job.id, now)
+
+        executed_after_update = await service.run_due_jobs(now_utc=now + timedelta(minutes=1))
+        assert executed_after_update == 0
+
+        executed_next_day = await service.run_due_jobs(now_utc=now + timedelta(days=1, minutes=1))
+        assert executed_next_day == 1
+
+        runs = await automations_repository.list_runs(job.id, limit=10)
+        assert len(runs) == 1
+        assert runs[0].trigger == "scheduled"
+        assert runs[0].scheduled_for == datetime(2026, 4, 21, 6, 0, 0)
+
+
+@pytest.mark.asyncio
+async def test_automations_due_run_continues_existing_cycle_after_job_update(db_setup, monkeypatch):
+    del db_setup
+    accounts = await _create_accounts("auto-cycle-update-a", "auto-cycle-update-b")
+    now = datetime(2026, 4, 20, 6, 0, 0)
+
+    def _fake_offsets(**_kwargs):
+        return [0, 120]
+
+    async def _fake_compact(*_args, **_kwargs):
+        return SimpleNamespace()
+
+    monkeypatch.setattr("app.modules.automations.service._pick_dispatch_offsets_seconds", _fake_offsets)
+    monkeypatch.setattr("app.modules.automations.service.core_compact_responses", _fake_compact)
+
+    async with SessionLocal() as session:
+        automations_repository = AutomationsRepository(session)
+        accounts_repository = AccountsRepository(session)
+        service = AutomationsService(automations_repository, accounts_repository)
+
+        job = await automations_repository.create_job(
+            name="Existing cycle after update",
+            enabled=True,
+            include_paused_accounts=False,
+            schedule_type="daily",
+            schedule_time="06:00",
+            schedule_timezone="UTC",
+            schedule_days=["mon", "tue", "wed", "thu", "fri", "sat", "sun"],
+            schedule_threshold_minutes=5,
+            model="gpt-5.3-codex",
+            reasoning_effort=None,
+            prompt="ping",
+            account_ids=[account.id for account in accounts],
+        )
+        await _set_job_updated_at(job.id, now)
+
+        executed_first = await service.run_due_jobs(now_utc=now)
+        assert executed_first == 1
+
+        await automations_repository.update_job(job.id, prompt="updated prompt")
+        await _set_job_updated_at(job.id, now + timedelta(minutes=1))
+
+        executed_second = await service.run_due_jobs(now_utc=now + timedelta(minutes=3))
+        assert executed_second == 1
+
+        runs = await automations_repository.list_runs(job.id, limit=10)
+        assert len(runs) == 2
+        assert {run.account_id for run in runs} == {accounts[0].id, accounts[1].id}
+
+
+@pytest.mark.asyncio
+async def test_automations_due_run_does_not_execute_same_day_when_job_is_created_after_slot_in_same_minute(
+    db_setup,
+    monkeypatch,
+):
+    del db_setup
+    account = (await _create_accounts("auto-created-same-minute-after-slot"))[0]
+    slot_time = datetime(2026, 4, 20, 6, 0, 0)
+
+    async def _fake_compact(*_args, **_kwargs):
+        return SimpleNamespace()
+
+    monkeypatch.setattr("app.modules.automations.service.core_compact_responses", _fake_compact)
+
+    async with SessionLocal() as session:
+        automations_repository = AutomationsRepository(session)
+        accounts_repository = AccountsRepository(session)
+        service = AutomationsService(automations_repository, accounts_repository)
+
+        job = await automations_repository.create_job(
+            name="Created after slot same minute",
+            enabled=True,
+            include_paused_accounts=False,
+            schedule_type="daily",
+            schedule_time="06:00",
+            schedule_timezone="UTC",
+            schedule_days=["mon", "tue", "wed", "thu", "fri", "sat", "sun"],
+            schedule_threshold_minutes=0,
+            model="gpt-5.3-codex",
+            reasoning_effort=None,
+            prompt="ping",
+            account_ids=[account.id],
+        )
+        await _set_job_updated_at(job.id, slot_time + timedelta(seconds=45))
+
+        executed_same_day = await service.run_due_jobs(now_utc=slot_time + timedelta(minutes=1, seconds=5))
+        assert executed_same_day == 0
+
+        executed_next_day = await service.run_due_jobs(now_utc=slot_time + timedelta(days=1, minutes=1))
+        assert executed_next_day == 1
+
+
+@pytest.mark.asyncio
+async def test_automations_due_run_does_not_execute_same_day_when_job_is_updated_after_slot_in_same_minute(
+    db_setup,
+    monkeypatch,
+):
+    del db_setup
+    account = (await _create_accounts("auto-updated-same-minute-after-slot"))[0]
+    slot_time = datetime(2026, 4, 20, 6, 0, 0)
+
+    async def _fake_compact(*_args, **_kwargs):
+        return SimpleNamespace()
+
+    monkeypatch.setattr("app.modules.automations.service.core_compact_responses", _fake_compact)
+
+    async with SessionLocal() as session:
+        automations_repository = AutomationsRepository(session)
+        accounts_repository = AccountsRepository(session)
+        service = AutomationsService(automations_repository, accounts_repository)
+
+        job = await automations_repository.create_job(
+            name="Updated after slot same minute",
+            enabled=True,
+            include_paused_accounts=False,
+            schedule_type="daily",
+            schedule_time="23:00",
+            schedule_timezone="UTC",
+            schedule_days=["mon", "tue", "wed", "thu", "fri", "sat", "sun"],
+            schedule_threshold_minutes=0,
+            model="gpt-5.3-codex",
+            reasoning_effort=None,
+            prompt="ping",
+            account_ids=[account.id],
+        )
+        await _set_job_updated_at(job.id, slot_time - timedelta(hours=1))
+
+        executed_before_update = await service.run_due_jobs(now_utc=slot_time + timedelta(minutes=1))
+        assert executed_before_update == 0
+
+        updated = await automations_repository.update_job(job.id, schedule_time="06:00")
+        assert updated is not None
+        await _set_job_updated_at(job.id, slot_time + timedelta(seconds=45))
+
+        executed_same_day = await service.run_due_jobs(now_utc=slot_time + timedelta(minutes=1, seconds=5))
+        assert executed_same_day == 0
+
+        executed_next_day = await service.run_due_jobs(now_utc=slot_time + timedelta(days=1, minutes=1))
+        assert executed_next_day == 1
 
 
 @pytest.mark.asyncio
@@ -904,7 +1153,7 @@ async def test_automations_due_run_skips_unavailable_accounts_and_can_include_pa
             prompt="ping",
             account_ids=[active.id, paused.id, rate_limited.id, quota.id, deactivated.id],
         )
-        await automations_repository.create_job(
+        include_paused_job = await automations_repository.create_job(
             name="Include paused accounts",
             enabled=True,
             include_paused_accounts=True,
@@ -918,6 +1167,10 @@ async def test_automations_due_run_skips_unavailable_accounts_and_can_include_pa
             prompt="ping",
             account_ids=[active.id, paused.id, rate_limited.id, quota.id, deactivated.id],
         )
+        await _set_job_updated_at(include_paused_job.id, now)
+        jobs = await automations_repository.list_jobs()
+        for job in jobs:
+            await _set_job_updated_at(job.id, now)
 
         executed = await service.run_due_jobs(now_utc=now + timedelta(seconds=5))
         assert executed == 3
@@ -948,7 +1201,7 @@ async def test_automations_runs_page_reports_in_progress_cycle_and_details(async
         automations_repository = AutomationsRepository(session)
         accounts_repository = AccountsRepository(session)
         service = AutomationsService(automations_repository, accounts_repository)
-        await automations_repository.create_job(
+        job = await automations_repository.create_job(
             name="Cycle progress",
             enabled=True,
             include_paused_accounts=False,
@@ -962,6 +1215,7 @@ async def test_automations_runs_page_reports_in_progress_cycle_and_details(async
             prompt="ping",
             account_ids=[accounts[0].id, accounts[1].id],
         )
+        await _set_job_updated_at(job.id, now)
         executed = await service.run_due_jobs(now_utc=now + timedelta(minutes=1))
         assert executed == 1
 
@@ -1161,7 +1415,7 @@ async def test_automations_runs_page_groups_scheduled_cycle_after_all_accounts_f
         automations_repository = AutomationsRepository(session)
         accounts_repository = AccountsRepository(session)
         service = AutomationsService(automations_repository, accounts_repository)
-        await automations_repository.create_job(
+        job = await automations_repository.create_job(
             name="Cycle grouped listing",
             enabled=True,
             include_paused_accounts=False,
@@ -1175,6 +1429,7 @@ async def test_automations_runs_page_groups_scheduled_cycle_after_all_accounts_f
             prompt="ping",
             account_ids=[account.id for account in accounts],
         )
+        await _set_job_updated_at(job.id, now)
         executed = await service.run_due_jobs(now_utc=now + timedelta(minutes=10))
         assert executed == 3
 

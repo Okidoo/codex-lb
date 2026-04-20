@@ -139,6 +139,8 @@ New top-level tab: `Automations`
 - Store deterministic run claim key per slot (`job_id + slot_key`) to enforce uniqueness.
 - Persist one cycle snapshot (`automation_run_cycles` + `automation_run_cycle_accounts`) before dispatching accounts.
 - Freeze both the eligible account set and each account's planned dispatch time for the lifetime of that cycle.
+- Creating or editing a job after today's local slot has already passed does not backfill a new same-day cycle; only the next eligible future local slot is started automatically.
+- If a cycle for today's slot already exists, later job edits do not cancel its remaining pending dispatches.
 - On cold restart, execute at most the latest eligible due slot instead of replaying historical backlog.
 
 ## Safety Notes

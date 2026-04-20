@@ -749,7 +749,11 @@ class AutomationsService:
             if due_slot is None:
                 continue
             cycle_key = _scheduled_cycle_key(job.id, due_slot)
-            cycle = await self._get_or_create_scheduled_cycle(job=job, due_slot=due_slot)
+            cycle = await self._repository.get_run_cycle(cycle_key=cycle_key)
+            if cycle is None and due_slot < _normalize_now_utc(job.updated_at):
+                continue
+            if cycle is None:
+                cycle = await self._get_or_create_scheduled_cycle(job=job, due_slot=due_slot)
             existing_cycle_runs = await self._repository.list_runs_for_cycle_key(cycle_key=cycle_key)
             existing_cycle_account_ids = {
                 cycle_run.account_id for cycle_run in existing_cycle_runs if cycle_run.account_id is not None

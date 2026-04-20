@@ -80,6 +80,19 @@ The scheduler MUST execute each enabled daily job once per local calendar day at
 - **THEN** on restart it schedules at most the latest eligible due daily slot
 - **AND** it does not enqueue all historical missed slots
 
+#### Scenario: Creating or editing a job after today's local slot does not backfill that same day
+
+- **WHEN** an automation job is created or edited after the configured local-time slot for the current local day has already passed
+- **THEN** the scheduler does not start a new same-day catch-up cycle for that job
+- **AND** the next automatically created cycle starts at the next eligible future local slot
+
+#### Scenario: Editing a job does not cancel an already created cycle
+
+- **WHEN** a daily cycle has already been created for the current local day
+- **AND** the job is edited before every pending account in that cycle has been dispatched
+- **THEN** the scheduler continues dispatching the remaining accounts from that existing cycle
+- **AND** it does not create a second cycle for the same local-day slot
+
 ### Requirement: Scheduler is safe in multi-replica deployments
 
 The system MUST guarantee at-most-once execution for each due schedule slot `(job_id, scheduled_for)` across replicas.
