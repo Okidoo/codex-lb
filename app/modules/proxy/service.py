@@ -8768,6 +8768,7 @@ class ProxyService:
                             request_state.request_text = retry_text
                         upstream_control.reconnect_requested = True
                         upstream_control.suppress_downstream_event = True
+                        _release_websocket_response_create_gate(request_state, response_create_gate)
                         upstream_control.downstream_texts = [
                             json.dumps(
                                 _security_work_advisory_event(
