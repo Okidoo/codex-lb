@@ -6,6 +6,7 @@ import gzip
 import inspect
 import json
 import logging
+import math
 import re
 import time
 from collections import deque
@@ -41,8 +42,10 @@ from app.core.clients.files import finalize_file as core_finalize_file
 from app.core.clients.http import lease_http_session
 from app.core.clients.proxy import (
     CodexControlResponse,
+    ImageFetchSession,
     ProxyResponseError,
     _as_image_fetch_session,
+    _inline_content_images,
     _inline_input_image_urls,
     _ws_transport_payload_budget_bytes,
     filter_inbound_headers,
@@ -833,7 +836,6 @@ class ProxyService:
             api_key_reservation=api_key_reservation,
             request_id=request_id,
         )
-        text_data = await self._inline_http_bridge_image_urls(text_data, request_state)
         if downstream_turn_state is not None:
             request_state.session_id = _normalize_session_id(downstream_turn_state)
         if previous_response_trimmed_input_count is not None:
@@ -1540,6 +1542,16 @@ class ProxyService:
             while True:
                 keepalive_interval = getattr(get_settings(), "sse_keepalive_interval_seconds", 10.0)
                 if keepalive_interval > 0:
+                    settings = get_settings()
+                    stream_idle_timeout_seconds = getattr(
+                        settings,
+                        "stream_idle_timeout_seconds",
+                        keepalive_interval * _STREAM_KEEPALIVE_MAX_COUNT,
+                    )
+                    max_keepalive_count = max(
+                        _STREAM_KEEPALIVE_MAX_COUNT,
+                        math.ceil(max(0.001, stream_idle_timeout_seconds) / keepalive_interval),
+                    )
                     wait_timeout = keepalive_interval
                     if not yielded_any and not keepalive_sent:
                         wait_timeout = max(wait_timeout, _HTTP_BRIDGE_STARTUP_KEEPALIVE_GRACE_SECONDS)
@@ -1548,11 +1560,13 @@ class ProxyService:
                     except asyncio.TimeoutError:
                         keepalive_count += 1
                         downstream_response_id = _websocket_downstream_response_id(request_state)
-                        if keepalive_count > _STREAM_KEEPALIVE_MAX_COUNT:
+                        if keepalive_count > max_keepalive_count:
                             logger.info(
-                                "HTTP bridge stream idle timeout request_id=%s keepalive_count=%s",
+                                "HTTP bridge stream idle timeout request_id=%s keepalive_count=%s "
+                                "max_keepalive_count=%s",
                                 request_state.request_id,
                                 keepalive_count,
+                                max_keepalive_count,
                             )
                             yield format_sse_event(
                                 cast(
@@ -4283,11 +4297,13 @@ class ProxyService:
             return text_data
         connect_timeout = getattr(settings, "upstream_connect_timeout_seconds", 5.0)
         async with lease_http_session() as http_session:
+            image_fetch_session = _as_image_fetch_session(http_session)
             inlined = await _inline_input_image_urls(
                 payload_dict,
-                _as_image_fetch_session(http_session),
+                image_fetch_session,
                 connect_timeout,
             )
+            inlined = await _inline_top_level_input_image_urls(inlined, image_fetch_session, connect_timeout)
         # After inlining, check if any external URLs survived (i.e. fetch
         # failed).  The upstream WS only accepts data: URLs so sending an
         # external URL would just cause a silent hang.
@@ -6527,6 +6543,7 @@ class ProxyService:
                 )
             session.queued_request_count += 1
         try:
+            text_data = await self._inline_http_bridge_image_urls(text_data, request_state)
             self._start_request_state_api_key_reservation_heartbeat(
                 request_state,
                 api_key=request_state.api_key,
@@ -13047,6 +13064,32 @@ def _is_inline_image_reference(value: JsonValue) -> bool:
     return isinstance(value, str) and value.startswith("data:image/")
 
 
+async def _inline_top_level_input_image_urls(
+    payload: dict[str, JsonValue],
+    session: ImageFetchSession,
+    connect_timeout: float,
+) -> dict[str, JsonValue]:
+    input_value = payload.get("input")
+    if not isinstance(input_value, list):
+        return payload
+
+    updated_input: list[JsonValue] = []
+    changed = False
+    for item in input_value:
+        if not isinstance(item, dict) or item.get("type") != "input_image":
+            updated_input.append(item)
+            continue
+        updated_item, item_changed = await _inline_content_images(item, session, connect_timeout)
+        updated_input.append(updated_item)
+        changed = changed or item_changed
+    if not changed:
+        return payload
+
+    updated_payload = dict(payload)
+    updated_payload["input"] = updated_input
+    return updated_payload
+
+
 def _count_external_image_urls(payload: dict[str, JsonValue]) -> int:
     """Count input_image items that still reference an external (non data:) URL."""
     input_value = payload.get("input")
@@ -13056,10 +13099,11 @@ def _count_external_image_urls(payload: dict[str, JsonValue]) -> int:
     for item in input_value:
         if not isinstance(item, dict):
             continue
-        content = item.get("content")
-        if not isinstance(content, list):
-            continue
-        for part in content:
+        content_value = item.get("content")
+        content_parts = content_value if isinstance(content_value, list) else [content_value]
+        if item.get("type") == "input_image":
+            content_parts = [item, *content_parts]
+        for part in content_parts:
             if not isinstance(part, dict):
                 continue
             if part.get("type") != "input_image":
