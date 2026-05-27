@@ -75,7 +75,7 @@ from app.core.openai.requests import ResponsesCompactRequest, ResponsesRequest
 from app.core.openai.v1_requests import V1ResponsesCompactRequest, V1ResponsesRequest
 from app.core.resilience.overload import is_local_overload_error_code, merge_retry_after_headers
 from app.core.runtime_logging import log_error_response
-from app.core.types import JsonObject, JsonValue
+from app.core.types import JsonValue
 from app.core.utils.json_guards import is_json_mapping
 from app.core.utils.sse import (
     CODEX_KEEPALIVE_FRAME,
@@ -1811,21 +1811,25 @@ async def v1_chat_completions(
 
     rate_limit_headers = await context.service.rate_limit_headers()
     try:
-        # Validate strict function tool schemas against the *original* request
-        # ``tools`` list before ``to_responses_request()`` runs. The chat
-        # normalizer (``_normalize_chat_tools``) silently drops invalid
-        # entries (non-dict tools, function tools with missing/empty
-        # ``name``), so validating the normalized output would surface
-        # ``tools[i].function.parameters`` with an ``i`` that no longer maps
-        # to the client's inbound payload. Using ``payload.tools`` keeps the
-        # error envelope's ``param`` aligned with what the client sent.
-        enforce_strict_function_tools_format(
-            payload.tools,
-            param_template="tools[{index}].function.parameters",
-            nested=True,
-        )
+        responses_shaped_payload = not payload.messages and payload.input is not None
+        if not responses_shaped_payload:
+            # Validate strict function tool schemas against the *original* request
+            # ``tools`` list before ``to_responses_request()`` runs. The chat
+            # normalizer (``_normalize_chat_tools``) silently drops invalid
+            # entries (non-dict tools, function tools with missing/empty
+            # ``name``), so validating the normalized output would surface
+            # ``tools[i].function.parameters`` with an ``i`` that no longer maps
+            # to the client's inbound payload. Using ``payload.tools`` keeps the
+            # error envelope's ``param`` aligned with what the client sent.
+            enforce_strict_function_tools_format(
+                payload.tools,
+                param_template="tools[{index}].function.parameters",
+                nested=True,
+            )
         responses_payload = payload.to_responses_request()
         enforce_strict_text_format(responses_payload)
+        if responses_shaped_payload:
+            enforce_strict_function_tools_format(responses_payload.tools)
     except ClientPayloadError as exc:
         error = openai_client_payload_error(exc)
         return _logged_error_json_response(request, 400, error, headers=rate_limit_headers)

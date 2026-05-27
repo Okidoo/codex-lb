@@ -743,6 +743,35 @@ async def test_v1_chat_completions_strict_violation_when_type_omitted_in_chat_to
 
 
 @pytest.mark.asyncio
+async def test_v1_chat_completions_responses_shaped_input_rejects_flat_strict_tool(async_client):
+    """Responses-shaped chat payloads must run the flat Responses strict validator."""
+    payload = {
+        "model": "gpt-5.2",
+        "input": [{"role": "user", "content": [{"type": "input_text", "text": "Weather in Seoul?"}]}],
+        "tools": [
+            {
+                "type": "function",
+                "name": "get_weather",
+                "description": "x",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"city": {"type": "string"}},
+                    "required": ["city"],
+                },
+                "strict": True,
+            }
+        ],
+    }
+    resp = await async_client.post("/v1/chat/completions", json=payload)
+    assert resp.status_code == 400
+    body = resp.json()
+    assert body["error"]["code"] == "invalid_function_parameters"
+    assert body["error"]["type"] == "invalid_request_error"
+    assert body["error"]["param"] == "tools[0].parameters"
+    assert "get_weather" in body["error"]["message"]
+
+
+@pytest.mark.asyncio
 async def test_v1_responses_rejects_strict_function_tool_violation(async_client):
     """Same as the chat-completions case, but on the native /v1/responses endpoint.
 

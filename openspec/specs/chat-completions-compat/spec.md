@@ -168,6 +168,11 @@ For non-function tool types (`web_search`, etc.), the strict flag is not applica
 - **WHEN** a client sends a chat tool with `strict: true` but `parameters.additionalProperties` is missing or `true`
 - **THEN** the proxy returns `HTTP 400` with `error.code = "invalid_function_parameters"` and `error.param = "tools[<index>].function.parameters"`, without any upstream connection being opened
 
+#### Scenario: Responses-shaped chat payload with flat strict tool is rejected with 400
+
+- **WHEN** a client sends a Responses-shaped payload through `/v1/chat/completions` using `input` and a flat Responses function tool with `strict: true` but a violating `parameters` schema
+- **THEN** the proxy returns `HTTP 400` with `error.code = "invalid_function_parameters"` and `error.param = "tools[<index>].parameters"`, without any upstream connection being opened
+
 #### Scenario: Chat tool with strict=false or omitted is forwarded with strict preserved (or absent)
 
 - **WHEN** a client sends a chat tool without a `strict` key (or with `strict: false`)
