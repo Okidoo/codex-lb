@@ -2226,8 +2226,10 @@ async def _probe_stream_startup_error(
     stream: AsyncIterator[str],
     *,
     convert_event_errors: bool = False,
-    timeout_seconds: float = _STREAM_STARTUP_ERROR_PROBE_SECONDS,
+    timeout_seconds: float | None = None,
 ) -> tuple[AsyncIterator[str], ProxyResponseError | OpenAIErrorEnvelopeModel | None]:
+    if timeout_seconds is None:
+        timeout_seconds = _STREAM_STARTUP_ERROR_PROBE_SECONDS
     first_task = asyncio.create_task(_read_first_stream_item(stream))
     try:
         first = await asyncio.wait_for(

@@ -5,6 +5,7 @@ import json
 
 import pytest
 
+import app.modules.proxy.api as proxy_api_module
 import app.modules.proxy.service as proxy_module
 
 pytestmark = pytest.mark.integration
@@ -331,6 +332,7 @@ async def test_v1_chat_completions_stream_returns_json_for_startup_failure(async
         )
 
     monkeypatch.setattr(proxy_module, "core_stream_responses", fake_stream)
+    monkeypatch.setattr(proxy_api_module, "_STREAM_STARTUP_ERROR_PROBE_SECONDS", 5.0)
 
     payload = {
         "model": "gpt-5.2",
