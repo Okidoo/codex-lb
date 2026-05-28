@@ -19,7 +19,7 @@ export type AccountDetailProps = {
   onResume: (accountId: string) => void;
   onSetAlias: (accountId: string, alias: string | null) => Promise<unknown>;
   onDelete: (accountId: string) => void;
-  onReauth: () => void;
+  onReauth: (accountId: string) => void;
   onExport: (accountId: string) => void;
   onLimitWarmupChange: (accountId: string, enabled: boolean) => void;
   onExportOpenCodeAuth: (accountId: string) => void;
@@ -85,7 +85,7 @@ export function AccountDetail({
         onPause={onPause}
         onResume={onResume}
         onDelete={onDelete}
-        onReauth={onReauth}
+        onReauth={() => onReauth(account.accountId)}
         onExport={onExport}
         onLimitWarmupChange={onLimitWarmupChange}
         onExportOpenCodeAuth={onExportOpenCodeAuth}

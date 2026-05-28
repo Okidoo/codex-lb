@@ -60,11 +60,11 @@ def should_refresh(
     """Return ``True`` when the access token should be refreshed.
 
     The effective interval is
-    ``interval_days ± jitter_hours``, where the offset is a stable
+    ``interval_days - jitter_offset``, where the offset is a stable
     deterministic function of ``account_id``. Two accounts onboarded on
-    the same day therefore land on different refresh days, which keeps
-    upstream OAuth from observing a clustered "fleet refresh" pattern
-    against the same ``oauth_client_id``.
+    the same day therefore land on different refresh points before the
+    configured max age, which keeps upstream OAuth from observing a
+    clustered "fleet refresh" pattern against the same ``oauth_client_id``.
 
     When ``account_id`` is omitted (legacy / defensive callers, tests
     that do not care about the specific account) the un-jittered
@@ -79,7 +79,7 @@ def should_refresh(
     if account_id:
         jitter_hours = float(settings.account_token_refresh_jitter_hours)
         offset_seconds = _refresh_jitter_offset_seconds(account_id, jitter_hours)
-        effective = base + timedelta(seconds=offset_seconds)
+        effective = base - timedelta(seconds=offset_seconds)
     else:
         effective = base
     # Defense in depth against a misconfigured ``jitter_hours`` (the
@@ -96,7 +96,7 @@ def should_refresh(
 
 
 def _refresh_jitter_offset_seconds(account_id: str, jitter_hours: float) -> float:
-    """Return a stable offset in ``[-jitter_hours*3600, +jitter_hours*3600]``.
+    """Return a stable offset in ``[0, jitter_hours*3600]``.
 
     The offset is derived from ``SHA-256(salt || account_id)`` so it is:
 
@@ -114,12 +114,11 @@ def _refresh_jitter_offset_seconds(account_id: str, jitter_hours: float) -> floa
         return 0.0
     digest = hashlib.sha256(_TOKEN_REFRESH_JITTER_SALT + account_id.encode("utf-8")).digest()
     # Take 8 bytes of the digest as an unsigned int and map it onto the
-    # symmetric window. ``2 * jitter_hours`` is the full window in
-    # hours, modulo'd into seconds.
+    # full offset window.
     raw = int.from_bytes(digest[:8], byteorder="big", signed=False)
-    full_window_seconds = 2.0 * jitter_hours * 3600.0
+    full_window_seconds = jitter_hours * 3600.0
     fraction = (raw % 1_000_000_007) / 1_000_000_007  # [0, 1)
-    return fraction * full_window_seconds - jitter_hours * 3600.0
+    return fraction * full_window_seconds
 
 
 def classify_refresh_error(code: str | None) -> bool:
@@ -161,10 +160,15 @@ async def refresh_access_token(
                     )
                     raise RefreshError("invalid_response", "Refresh response invalid", False) from exc
                 if resp.status >= 400:
+                    code = _extract_error_code(payload_data)
+                    message = _extract_error_message(payload_data)
                     logger.warning(
-                        "Token refresh failed request_id=%s status=%s",
+                        "Token refresh failed account_id=%s request_id=%s status=%s code=%s message=%s",
+                        account_id,
                         get_request_id(),
                         resp.status,
+                        code,
+                        message,
                     )
                     raise _refresh_error_from_payload(payload_data, resp.status)
     except RefreshError:

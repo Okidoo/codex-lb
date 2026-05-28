@@ -28,6 +28,13 @@ The Accounts page SHALL display a two-column layout: left panel with searchable 
 - **WHEN** a user clicks an account in the list
 - **THEN** the right panel shows the selected account's details
 
+#### Scenario: Re-authenticate selected account
+- **WHEN** a user clicks re-authenticate for a deactivated account
+- **THEN** the app starts the OAuth flow with that selected account id as
+  the re-authentication target
+- **AND** a successful sign-in refreshes the selected account instead of
+  creating a new account row
+
 #### Scenario: Account import
 
 - **WHEN** a user clicks the import button and uploads an auth.json file

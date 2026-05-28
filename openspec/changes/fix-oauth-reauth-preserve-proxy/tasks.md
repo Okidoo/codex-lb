@@ -1,0 +1,6 @@
+- [x] Add targeted OAuth re-authentication state carrying the selected account id.
+- [x] Persist targeted re-authentication into the existing account row while preserving proxy fields.
+- [x] Wire the Accounts page re-auth button to start OAuth with the selected account id.
+- [x] Add backend and frontend regression coverage.
+- [x] Update account proxy and frontend specs.
+- [x] Run focused backend/frontend tests and OpenSpec validation.

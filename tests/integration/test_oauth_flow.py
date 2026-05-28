@@ -249,6 +249,120 @@ async def test_device_oauth_flow_keeps_separate_accounts_when_import_without_ove
 
 
 @pytest.mark.asyncio
+async def test_reauth_updates_existing_deactivated_account_and_preserves_proxy(
+    async_client,
+    monkeypatch,
+):
+    await oauth_module._OAUTH_STORE.reset()
+
+    settings = await async_client.put(
+        "/api/settings",
+        json={
+            "stickyThreadsEnabled": False,
+            "preferEarlierResetAccounts": False,
+            "importWithoutOverwrite": True,
+            "totpRequiredOnLogin": False,
+        },
+    )
+    assert settings.status_code == 200
+
+    email = "reauth-proxy@example.com"
+    raw_account_id = "acc_reauth_proxy"
+    account_id = generate_unique_account_id(raw_account_id, email)
+    encryptor = TokenEncryptor()
+    async with SessionLocal() as session:
+        repo = AccountsRepository(session)
+        await repo.upsert(
+            Account(
+                id=account_id,
+                chatgpt_account_id=raw_account_id,
+                email=email,
+                plan_type="plus",
+                access_token_encrypted=encryptor.encrypt("old-access"),
+                refresh_token_encrypted=encryptor.encrypt("old-refresh"),
+                id_token_encrypted=encryptor.encrypt("old-id"),
+                last_refresh=utcnow(),
+                status=AccountStatus.DEACTIVATED,
+                deactivation_reason="token_expired",
+                proxy_host="proxy.example.com",
+                proxy_port=1080,
+                proxy_username=_proxy_user_fixture(),
+                proxy_password_encrypted=encryptor.encrypt(_proxy_auth_fixture()),
+                proxy_remote_dns=True,
+                proxy_label="house-1",
+            )
+        )
+
+    class DummyProxySession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+    captured_proxy: dict[str, object | None] = {}
+    captured_sessions = {"device_code": False, "token_exchange": False}
+
+    async def fake_proxy_session(**kwargs):
+        captured_proxy.update(kwargs)
+        return DummyProxySession()
+
+    async def fake_device_code(**kwargs):
+        captured_sessions["device_code"] = kwargs.get("session") is not None
+        return _device_code_fixture()
+
+    async def fake_exchange_device_token(**kwargs):
+        captured_sessions["token_exchange"] = kwargs.get("session") is not None
+        return _oauth_tokens_for(email, raw_account_id)
+
+    async def fake_sleep(_: float) -> None:
+        return None
+
+    monkeypatch.setattr(oauth_module, "build_account_proxy_session", fake_proxy_session)
+    monkeypatch.setattr(oauth_module, "request_device_code", fake_device_code)
+    monkeypatch.setattr(oauth_module, "exchange_device_token", fake_exchange_device_token)
+    monkeypatch.setattr(oauth_module, "_async_sleep", fake_sleep)
+
+    start = await async_client.post(
+        "/api/oauth/start",
+        json={"forceMethod": "device", "reauthAccountId": account_id},
+    )
+    assert start.status_code == 200, start.text
+
+    await asyncio.sleep(0)
+    for _ in range(20):
+        status = await async_client.get("/api/oauth/status")
+        assert status.status_code == 200
+        if status.json()["status"] == "success":
+            break
+        await asyncio.sleep(0.05)
+    else:
+        raise AssertionError("did not reach success")
+
+    assert captured_proxy["host"] == "proxy.example.com"
+    assert captured_proxy["password"] == _proxy_auth_fixture()
+    assert captured_sessions == {"device_code": True, "token_exchange": True}
+
+    accounts = await async_client.get("/api/accounts")
+    assert accounts.status_code == 200
+    data = [account for account in accounts.json()["accounts"] if account["email"] == email]
+    assert len(data) == 1
+    assert data[0]["accountId"] == account_id
+    assert data[0]["status"] == "active"
+    assert data[0]["proxy"]["host"] == "proxy.example.com"
+    assert data[0]["proxy"]["hasPassword"] is True
+
+    async with SessionLocal() as session:
+        repo = AccountsRepository(session)
+        account = await repo.get_by_id(account_id)
+        assert account is not None
+        assert account.proxy_host == "proxy.example.com"
+        assert account.proxy_label == "house-1"
+        assert encryptor.decrypt(account.access_token_encrypted) == "oauth-access-token"
+        assert encryptor.decrypt(account.refresh_token_encrypted) == "oauth-refresh-token"
+
+
+@pytest.mark.asyncio
 async def test_device_oauth_flow_reports_error_when_duplicate_email_is_ambiguous_in_overwrite_mode(
     async_client,
     monkeypatch,
@@ -654,7 +768,7 @@ async def test_browser_oauth_redirect_uses_registered_uri_and_matches_token_exch
     )
     assert start.status_code == 200
     payload = start.json()
-    expected_callback_url = "http://dashboard.example.test:1455/auth/callback"
+    expected_callback_url = "http://localhost:1455/auth/callback"
     assert payload["callbackUrl"] == expected_callback_url
     assert parse_qs(urlparse(payload["authorizationUrl"]).query)["redirect_uri"] == [expected_callback_url]
 

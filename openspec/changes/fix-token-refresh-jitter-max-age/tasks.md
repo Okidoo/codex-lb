@@ -1,0 +1,5 @@
+- [x] Update token refresh jitter calculation so offsets only make refreshes earlier than the configured interval.
+- [x] Add unit coverage proving jitter never delays refresh beyond `token_refresh_interval_days`.
+- [x] Update `openspec/specs/outbound-http-clients/spec.md` to make the configured interval the maximum refresh age.
+- [x] Run focused refresh tests.
+- [x] Run OpenSpec validation.

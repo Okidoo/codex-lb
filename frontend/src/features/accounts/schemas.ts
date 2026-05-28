@@ -195,6 +195,7 @@ export const AccountExportResponseSchema = z.object({
 
 export const OauthStartRequestSchema = z.object({
   forceMethod: z.string().optional(),
+  reauthAccountId: z.string().max(255).optional(),
   // When true, the OAuth attempt's three token-arrival paths
   // (auto callback / manual callback / device polling) stash the
   // acquired tokens in transient state instead of persisting an

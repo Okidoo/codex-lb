@@ -86,6 +86,14 @@ use the start-time SOCKS5 proxy with the codex TLS profile.
 Token-arrival sites MUST hold the acquired OAuth tokens in transient in-memory
 state and MUST NOT persist the account until the operator submits a proxy
 configuration via `POST /api/oauth/complete`.
+
+When an OAuth attempt targets an existing account for re-authentication, the
+service MUST persist the refreshed OAuth tokens into that existing account row
+instead of applying generic add-account duplicate/copy behavior. The stored
+account proxy configuration MUST be preserved. If that existing account has a
+stored proxy, server-side OAuth calls for the re-authentication attempt MUST
+use that stored proxy configuration.
+
 This requirement covers codex-lb server-side OAuth calls, proxy probes, and
 post-persistence account egress; the operator's own browser/device navigation
 to upstream OpenAI/Codex sign-in pages is outside backend egress control and
@@ -141,6 +149,24 @@ otherwise resets the OAuth state store) MUST also drop the held tokens.
 - **THEN** the service persists the account immediately on token arrival as
   before, without requiring `POST /api/oauth/complete` for persistence
 - **AND** the account is created without a proxy configuration
+
+#### Scenario: Targeted re-authentication preserves the existing proxy
+- **GIVEN** a deactivated account with a stored proxy configuration
+- **AND** duplicate imports/adds are configured to create separate account rows
+- **WHEN** the operator starts OAuth re-authentication for that account
+- **AND** the upstream OAuth flow succeeds for the same account identity
+- **THEN** the service updates the existing account row to active with the
+  new tokens
+- **AND** no duplicate account row is created
+- **AND** the stored proxy configuration remains attached to the account
+- **AND** server-side OAuth calls for that attempt use the stored proxy
+
+#### Scenario: Targeted re-authentication rejects a different identity
+- **GIVEN** a deactivated account selected for OAuth re-authentication
+- **WHEN** the upstream OAuth flow returns credentials for a different
+  ChatGPT account id or email
+- **THEN** the service rejects the re-authentication
+- **AND** the existing account row and proxy configuration are not overwritten
 
 ### Requirement: Account proxy summary never leaks the password
 

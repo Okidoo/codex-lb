@@ -147,9 +147,10 @@ export type OauthDialogProps = {
   open: boolean;
   state: OAuthState;
   onOpenChange: (open: boolean) => void;
+  reauthAccountId?: string | null;
   onStart: (
     method: "browser" | "device" | undefined,
-    options?: { expectProxy?: boolean; proxy?: AccountProxyInput },
+    options?: { expectProxy?: boolean; proxy?: AccountProxyInput; reauthAccountId?: string },
   ) => Promise<void>;
   onComplete: (proxy?: AccountProxyInput) => Promise<void>;
   onManualCallback: (callbackUrl: string) => Promise<void>;
@@ -160,6 +161,7 @@ export function OauthDialog({
   open,
   state,
   onOpenChange,
+  reauthAccountId = null,
   onStart,
   onComplete,
   onManualCallback,
@@ -223,12 +225,13 @@ export function OauthDialog({
   };
 
   const handleStart = () => {
-    const nextExpectProxy = showProxy;
+    const nextExpectProxy = reauthAccountId ? false : showProxy;
     if (nextExpectProxy && !proxyValidation.ok) return;
     setAttemptExpectsProxy(nextExpectProxy);
     setLocalFinishError(null);
     void onStart(selectedMethod, {
       expectProxy: nextExpectProxy,
+      ...(reauthAccountId ? { reauthAccountId } : {}),
       proxy: nextExpectProxy && proxyValidation.ok ? proxyValidation.payload : undefined,
     });
   };
@@ -238,6 +241,7 @@ export function OauthDialog({
     setLocalFinishError(null);
     void onStart("browser", {
       expectProxy: attemptExpectsProxy,
+      ...(reauthAccountId ? { reauthAccountId } : {}),
       proxy: attemptExpectsProxy && proxyValidation.ok ? proxyValidation.payload : undefined,
     });
   };
@@ -309,14 +313,16 @@ export function OauthDialog({
                 </p>
               </button>
             </div>
-            <ProxyFormSection
-              idPrefix="oauth"
-              values={proxyValues}
-              onChange={setProxyValues}
-              showProxy={showProxy}
-              onToggleShowProxy={setShowProxy}
-              errorMessage={showProxy ? proxyValidationError : null}
-            />
+            {!reauthAccountId ? (
+              <ProxyFormSection
+                idPrefix="oauth"
+                values={proxyValues}
+                onChange={setProxyValues}
+                showProxy={showProxy}
+                onToggleShowProxy={setShowProxy}
+                errorMessage={showProxy ? proxyValidationError : null}
+              />
+            ) : null}
           </div>
         ) : null}
 

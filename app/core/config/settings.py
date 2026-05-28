@@ -184,13 +184,11 @@ class Settings(BaseSettings):
         default=18.0,
         ge=0.0,
         # Upper bound: half the default refresh interval expressed in
-        # hours (8 days * 24 / 2 = 96h). The jitter is signed so an
-        # offset larger than half the base interval can produce a
-        # negative effective duration, which makes ``should_refresh``
-        # always-true and triggers a refresh storm. Pinning the cap
-        # against the default interval is conservative but avoids the
-        # runaway. Operators running custom ``token_refresh_interval_days``
-        # values should adjust accordingly.
+        # hours (8 days * 24 / 2 = 96h). Jitter is an early-refresh
+        # offset, so this cap keeps the default schedule from starting
+        # earlier than halfway through the interval. Operators running
+        # custom ``token_refresh_interval_days`` values should adjust
+        # accordingly.
         le=96.0,
     )
     account_proxy_probe_timeout_seconds: float = Field(default=10.0, gt=0)

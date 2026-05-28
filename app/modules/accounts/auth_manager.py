@@ -15,6 +15,7 @@ from app.core.balancer import PERMANENT_FAILURE_CODES
 from app.core.config.settings import get_settings
 from app.core.crypto import TokenEncryptor
 from app.core.plan_types import coerce_account_plan_type
+from app.core.utils.request_id import get_request_id
 from app.core.utils.time import utcnow
 from app.db.models import Account, AccountStatus
 
@@ -197,6 +198,16 @@ class AuthManager:
                 ):
                     return latest
                 reason = PERMANENT_FAILURE_CODES.get(exc.code, exc.message)
+                logger.warning(
+                    (
+                        "Deactivating account after permanent token refresh failure "
+                        "account_id=%s code=%s reason=%s request_id=%s"
+                    ),
+                    account.id,
+                    exc.code,
+                    reason,
+                    get_request_id(),
+                )
                 await self._repo.update_status(account.id, AccountStatus.DEACTIVATED, reason)
                 account.status = AccountStatus.DEACTIVATED
                 account.deactivation_reason = reason

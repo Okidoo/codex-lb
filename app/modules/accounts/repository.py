@@ -8,6 +8,7 @@ from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.auth import DEFAULT_EMAIL
 from app.core.utils.time import utcnow
 from app.db.models import Account, AccountStatus, DashboardSettings, RequestLog, StickySession, UsageHistory
 
@@ -54,6 +55,14 @@ class AccountIdentityConflictError(Exception):
         super().__init__(
             f"Cannot overwrite account for email '{email}' because multiple matching accounts exist. "
             "Remove duplicates or enable import without overwrite."
+        )
+
+
+class AccountReauthIdentityMismatchError(Exception):
+    def __init__(self, account_id: str) -> None:
+        self.account_id = account_id
+        super().__init__(
+            f"OAuth re-authentication for account '{account_id}' returned credentials for a different account."
         )
 
 
@@ -343,6 +352,24 @@ class AccountsRepository:
         await self._session.commit()
         return result.scalar_one_or_none() is not None
 
+    async def reauthenticate_account(
+        self,
+        account_id: str,
+        account: Account,
+    ) -> Account | None:
+        existing = await self._session.get(Account, account_id)
+        if existing is None:
+            return None
+        _ensure_reauth_identity_matches(existing, account)
+        if account.chatgpt_account_id is None:
+            account.chatgpt_account_id = existing.chatgpt_account_id
+        if account.email == DEFAULT_EMAIL and existing.email != DEFAULT_EMAIL:
+            account.email = existing.email
+        _apply_account_updates(existing, account)
+        await self._session.commit()
+        await self._session.refresh(existing)
+        return existing
+
     async def get_proxy_config(self, account_id: str) -> AccountProxyRecord | None:
         """Return the stored proxy configuration for an account, or ``None``.
 
@@ -541,6 +568,23 @@ def _apply_account_updates(
         target.proxy_remote_dns = source.proxy_remote_dns
         target.proxy_label = source.proxy_label
         target.proxy_last_validated_at = source.proxy_last_validated_at
+
+
+def _ensure_reauth_identity_matches(existing: Account, source: Account) -> None:
+    if (
+        existing.chatgpt_account_id
+        and source.chatgpt_account_id
+        and existing.chatgpt_account_id != source.chatgpt_account_id
+    ):
+        raise AccountReauthIdentityMismatchError(existing.id)
+    if (
+        existing.email
+        and source.email
+        and existing.email != DEFAULT_EMAIL
+        and source.email != DEFAULT_EMAIL
+        and existing.email != source.email
+    ):
+        raise AccountReauthIdentityMismatchError(existing.id)
 
 
 def _advisory_lock_key(scope: str, value: str) -> int:

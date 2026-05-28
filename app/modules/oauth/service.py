@@ -10,10 +10,10 @@ from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Awaitable, Callable
-from urllib.parse import urlsplit, urlunsplit
 
 import aiohttp
 from aiohttp import web
+from cryptography.fernet import InvalidToken
 
 from app.core.auth import (
     DEFAULT_EMAIL,
@@ -22,6 +22,7 @@ from app.core.auth import (
     extract_id_token_claims,
     generate_unique_account_id,
 )
+from app.core.clients.account_http import invalidate_account_client
 from app.core.clients.account_proxy_probe import (
     ProxyProbeError,
     build_account_proxy_session,
@@ -41,7 +42,11 @@ from app.core.crypto import TokenEncryptor
 from app.core.plan_types import coerce_account_plan_type
 from app.core.utils.time import utcnow
 from app.db.models import Account, AccountStatus
-from app.modules.accounts.repository import AccountIdentityConflictError, AccountsRepository
+from app.modules.accounts.repository import (
+    AccountIdentityConflictError,
+    AccountReauthIdentityMismatchError,
+    AccountsRepository,
+)
 from app.modules.accounts.schemas import AccountProxyInput, AccountProxySummary
 from app.modules.accounts.service import (
     AccountsService,
@@ -54,6 +59,7 @@ from app.modules.oauth.schemas import (
     OauthStartResponse,
     OauthStatusResponse,
 )
+from app.modules.proxy.account_cache import get_account_selection_cache
 
 # Maximum time an OAuth attempt may hold acquired tokens in transient
 # state while waiting for the operator to submit proxy fields. Bounded
@@ -77,19 +83,14 @@ class OauthProxyExpectationError(ValueError):
     """Raised when proxy fields are supplied without opting into proxy mode."""
 
 
+class OauthReauthTargetError(ValueError):
+    """Raised when a targeted re-authentication account cannot be used."""
+
+
 def _oauth_redirect_uri(callback_host: str | None, *, settings: Settings | None = None) -> str:
     effective_settings = settings or get_settings()
     configured = effective_settings.oauth_redirect_uri.strip()
-    if not callback_host:
-        return configured
-    host = callback_host.strip()
-    if not host:
-        return configured
-    parsed = urlsplit(configured)
-    if not parsed.scheme or not parsed.netloc:
-        return configured
-    netloc = f"{host}:{parsed.port}" if parsed.port is not None else host
-    return urlunsplit((parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment))
+    return configured
 
 
 @dataclass
@@ -119,6 +120,7 @@ class OAuthState:
     pending_expires_at: float | None = None
     finalizing_proxy: bool = False
     redirect_uri: str | None = None
+    reauth_account_id: str | None = None
 
 
 class OAuthStateStore:
@@ -311,12 +313,19 @@ class OauthService:
     async def start_oauth(self, request: OauthStartRequest, *, callback_host: str | None = None) -> OauthStartResponse:
         force_method = (request.force_method or "").lower()
         expect_proxy = bool(request.expect_proxy)
+        reauth_account_id = (request.reauth_account_id or "").strip() or None
+        if reauth_account_id is not None and (expect_proxy or _start_proxy_fields_present(request)):
+            raise OauthProxyExpectationError(
+                "Re-authentication uses the existing proxy; proxy fields are not supported"
+            )
         if not expect_proxy and _start_proxy_fields_present(request):
             raise OauthProxyExpectationError("Proxy fields require expectProxy=true")
         oauth_proxy = _proxy_payload_from_start_request(request, require_proxy=expect_proxy)
+        if reauth_account_id is not None:
+            oauth_proxy = await self._stored_proxy_payload_for_reauth(reauth_account_id)
         if not force_method:
             accounts = await self._accounts_repo.list_accounts()
-            if accounts and not expect_proxy:
+            if accounts and not expect_proxy and reauth_account_id is None:
                 server: OAuthCallbackServer | None = None
                 stop_task: asyncio.Task[None] | None = None
                 async with self._store.lock:
@@ -332,6 +341,7 @@ class OauthService:
             return await self._start_device_flow(
                 expect_proxy=expect_proxy,
                 oauth_proxy=oauth_proxy,
+                reauth_account_id=reauth_account_id,
             )
 
         try:
@@ -339,15 +349,41 @@ class OauthService:
                 expect_proxy=expect_proxy,
                 oauth_proxy=oauth_proxy,
                 callback_host=callback_host,
+                reauth_account_id=reauth_account_id,
             )
         except OSError:
             return await self._start_device_flow(
                 expect_proxy=expect_proxy,
                 oauth_proxy=oauth_proxy,
+                reauth_account_id=reauth_account_id,
             )
 
     async def reset_oauth(self) -> None:
         await self._store.reset()
+
+    async def _stored_proxy_payload_for_reauth(self, account_id: str) -> AccountProxyInput | None:
+        account = await self._accounts_repo.get_by_id(account_id)
+        if account is None:
+            raise OauthReauthTargetError(f"Account not found: {account_id}")
+        record = await self._accounts_repo.get_proxy_config(account_id)
+        if record is None:
+            return None
+        password: str | None = None
+        if record.password_encrypted is not None:
+            try:
+                password = self._encryptor.decrypt(record.password_encrypted)
+            except InvalidToken as exc:
+                raise OauthReauthTargetError(
+                    f"Account {account_id!r} proxy password cannot be decrypted; re-enter the proxy password first"
+                ) from exc
+        return AccountProxyInput(
+            host=record.host,
+            port=record.port,
+            username=record.username,
+            password=password,
+            remote_dns=record.remote_dns,
+            label=record.label,
+        )
 
     async def oauth_status(self, flow_id: str | None = None) -> OauthStatusResponse:
         async with self._store.lock:
@@ -482,6 +518,7 @@ class OauthService:
         expect_proxy: bool = False,
         oauth_proxy: AccountProxyInput | None = None,
         callback_host: str | None = None,
+        reauth_account_id: str | None = None,
     ) -> OauthStartResponse:
         await self._wait_for_callback_server_stop()
         flow_id = secrets.token_urlsafe(12)
@@ -510,6 +547,7 @@ class OauthService:
                     expect_proxy=expect_proxy,
                     oauth_proxy=oauth_proxy,
                     redirect_uri=redirect_uri,
+                    reauth_account_id=reauth_account_id,
                 )
             )
             if self._store._callback_server is None:
@@ -603,6 +641,10 @@ class OauthService:
             message = str(exc)
             await self._set_error(message, flow_id=flow.flow_id)
             return ManualCallbackResponse(status="error", error_message=message)
+        except (AccountReauthIdentityMismatchError, OauthReauthTargetError) as exc:
+            message = str(exc)
+            await self._set_error(message, flow_id=flow.flow_id)
+            return ManualCallbackResponse(status="error", error_message=message)
         except Exception:
             logger.exception("Unexpected manual OAuth callback error")
             message = "Unexpected OAuth callback error."
@@ -614,6 +656,7 @@ class OauthService:
         *,
         expect_proxy: bool = False,
         oauth_proxy: AccountProxyInput | None = None,
+        reauth_account_id: str | None = None,
     ) -> OauthStartResponse:
         flow_id = secrets.token_urlsafe(12)
         attempt_id = secrets.token_urlsafe(16)
@@ -636,6 +679,7 @@ class OauthService:
                 expires_at=time.time() + device.expires_in_seconds,
                 expect_proxy=expect_proxy,
                 oauth_proxy=oauth_proxy,
+                reauth_account_id=reauth_account_id,
             )
             self._store.remove_pending_device_flows_locked()
             self._store.remember_flow_locked(flow)
@@ -691,6 +735,9 @@ class OauthService:
         except AccountIdentityConflictError as exc:
             await self._set_error(str(exc), flow_id=flow.flow_id)
             html = _error_html(str(exc))
+        except (AccountReauthIdentityMismatchError, OauthReauthTargetError) as exc:
+            await self._set_error(str(exc), flow_id=flow.flow_id)
+            html = _error_html(str(exc))
 
         asyncio.create_task(self._stop_callback_server_if_idle())
         return self._html_response(html)
@@ -720,6 +767,8 @@ class OauthService:
         except OAuthError as exc:
             await self._set_error(exc.message, flow_id=flow_id)
         except AccountIdentityConflictError as exc:
+            await self._set_error(str(exc), flow_id=flow_id)
+        except (AccountReauthIdentityMismatchError, OauthReauthTargetError) as exc:
             await self._set_error(str(exc), flow_id=flow_id)
         finally:
             async with self._store.lock:
@@ -766,6 +815,7 @@ class OauthService:
             if state.attempt_id != attempt_id or state.cancelled:
                 return "stale"
             expect_proxy = state.expect_proxy
+            reauth_account_id = state.reauth_account_id
             if expect_proxy:
                 state.pending_tokens = tokens
                 state.pending_expires_at = time.time() + _PENDING_TOKENS_TTL_SECONDS
@@ -773,17 +823,33 @@ class OauthService:
                 state.status = "tokens_ready"
                 state.error_message = None
                 return "tokens_ready"
-        await self._persist_tokens(tokens)
+        await self._persist_tokens(tokens, reauth_account_id=reauth_account_id)
         await self._set_success(flow_id)
         return "success"
 
-    async def _persist_tokens(self, tokens: OAuthTokens) -> None:
+    async def _persist_tokens(self, tokens: OAuthTokens, *, reauth_account_id: str | None = None) -> None:
         account = self._build_account_from_tokens(tokens)
         if self._repo_factory:
             async with self._repo_factory() as repo:
-                await repo.upsert(account)
+                await self._persist_account(repo, account, reauth_account_id=reauth_account_id)
         else:
-            await self._accounts_repo.upsert(account)
+            await self._persist_account(self._accounts_repo, account, reauth_account_id=reauth_account_id)
+
+    async def _persist_account(
+        self,
+        repo: AccountsRepository,
+        account: Account,
+        *,
+        reauth_account_id: str | None,
+    ) -> None:
+        if reauth_account_id is None:
+            await repo.upsert(account)
+            return
+        saved = await repo.reauthenticate_account(reauth_account_id, account)
+        if saved is None:
+            raise OauthReauthTargetError(f"Account not found: {reauth_account_id}")
+        await invalidate_account_client(saved.id)
+        get_account_selection_cache().invalidate()
 
     def _build_account_from_tokens(self, tokens: OAuthTokens) -> Account:
         claims = extract_id_token_claims(tokens.id_token)

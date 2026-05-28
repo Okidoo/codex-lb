@@ -42,7 +42,7 @@ export function AccountsPage() {
   const oauth = useOauth();
 
   const importDialog = useDialogState();
-  const oauthDialog = useDialogState();
+  const oauthDialog = useDialogState<string>();
   const deleteDialog = useDialogState<string>();
   const exportDialog = useDialogState<AccountOpenCodeAuthExportResponse>();
   const [deleteHistory, setDeleteHistory] = useState(false);
@@ -141,7 +141,7 @@ export function AccountsPage() {
                 importMutation.reset();
                 importDialog.show();
               }}
-              onOpenOauth={() => oauthDialog.show()}
+              onOpenOauth={() => oauthDialog.show("")}
             />
           </div>
 
@@ -159,7 +159,7 @@ export function AccountsPage() {
               setAliasMutation.mutateAsync({ accountId, alias })
             }
             onDelete={(accountId) => deleteDialog.show(accountId)}
-            onReauth={() => oauthDialog.show()}
+            onReauth={(accountId) => oauthDialog.show(accountId)}
             onExport={(accountId) => void exportMutation.mutateAsync(accountId)}
             onExportOpenCodeAuth={(accountId) => {
               void exportOpenCodeAuthMutation
@@ -188,6 +188,7 @@ export function AccountsPage() {
         <OauthDialog
           open={oauthDialog.open}
           state={oauth.state}
+          reauthAccountId={oauthDialog.data || null}
           onOpenChange={oauthDialog.onOpenChange}
           onStart={async (method, options) => {
             await oauth.start(method, options);

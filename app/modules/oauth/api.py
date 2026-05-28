@@ -21,7 +21,7 @@ from app.modules.oauth.schemas import (
     OauthStartResponse,
     OauthStatusResponse,
 )
-from app.modules.oauth.service import OauthProxyExpectationError
+from app.modules.oauth.service import OauthProxyExpectationError, OauthReauthTargetError
 
 router = APIRouter(
     prefix="/api/oauth",
@@ -42,6 +42,11 @@ async def start_oauth(
         return JSONResponse(
             status_code=422,
             content=dashboard_error("validation_error", str(exc)),
+        )
+    except OauthReauthTargetError as exc:
+        return JSONResponse(
+            status_code=422,
+            content=dashboard_error("reauth_target_invalid", str(exc)),
         )
     except ValidationError:
         return JSONResponse(

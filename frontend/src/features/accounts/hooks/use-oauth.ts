@@ -96,7 +96,7 @@ export function useOauth() {
   const start = useCallback(
     async (
       forceMethod?: "browser" | "device",
-      options?: { expectProxy?: boolean; proxy?: AccountProxyInput },
+      options?: { expectProxy?: boolean; proxy?: AccountProxyInput; reauthAccountId?: string },
     ) => {
       clearPollTimer();
       clearCountdownTimer();
@@ -110,6 +110,7 @@ export function useOauth() {
         const proxy = options?.proxy;
         const response = await startOauth({
           forceMethod,
+          ...(options?.reauthAccountId ? { reauthAccountId: options.reauthAccountId } : {}),
           expectProxy,
           ...(proxy
             ? {

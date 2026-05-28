@@ -72,14 +72,14 @@ def test_jitter_offset_differs_across_accounts():
 
 
 def test_jitter_offset_is_bounded_by_window():
-    """The signed offset MUST never escape ``[-jitter*3600, +jitter*3600]``."""
+    """The offset MUST never escape ``[0, jitter*3600]``."""
     from app.core.auth.refresh import _refresh_jitter_offset_seconds
 
     jitter_hours = 18.0
     bound = jitter_hours * 3600.0
     for i in range(200):
         offset = _refresh_jitter_offset_seconds(f"acc_{i}", jitter_hours=jitter_hours)
-        assert -bound <= offset <= bound
+        assert 0 <= offset <= bound
 
 
 def test_jitter_zero_window_disables_offset():
@@ -95,11 +95,17 @@ def test_should_refresh_applies_account_jitter_to_threshold():
 
     We run a small probe across many account ids at a ``last_refresh``
     that sits inside the jitter window (``interval - jitter`` …
-    ``interval + jitter``). At least one account must return ``True``
-    and at least one must return ``False`` — proving the threshold is
-    actually shifting per account.
+    ``interval``). At least one account must return ``True`` and at
+    least one must return ``False`` — proving the threshold is actually
+    shifting per account.
     """
-    last = utcnow() - timedelta(days=8)
+    last = utcnow() - timedelta(days=7, hours=12)
     decisions = {should_refresh(last, account_id=f"acc_{i}") for i in range(100)}
     # ``decisions`` should contain both ``True`` and ``False``.
     assert decisions == {True, False}
+
+
+def test_account_jitter_never_delays_beyond_configured_interval():
+    last = utcnow() - timedelta(days=8, seconds=1)
+    decisions = {should_refresh(last, account_id=f"acc_{i}") for i in range(100)}
+    assert decisions == {True}

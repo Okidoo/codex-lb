@@ -8,6 +8,7 @@ from app.modules.shared.schemas import DashboardModel
 
 class OauthStartRequest(DashboardModel):
     force_method: str | None = None
+    reauth_account_id: str | None = Field(default=None, max_length=255)
     # When True, the OAuth attempt's three token-arrival paths
     # (auto callback / manual callback / device polling) stash the
     # acquired tokens in transient OAuth state instead of persisting

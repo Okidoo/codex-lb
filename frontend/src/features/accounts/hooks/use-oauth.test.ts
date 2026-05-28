@@ -141,6 +141,38 @@ describe("useOauth", () => {
     expect(completeOauthMock).not.toHaveBeenCalled();
   });
 
+  it("forwards a targeted re-auth account id when starting OAuth", async () => {
+    startOauthMock.mockResolvedValue({
+      flowId: "flow-reauth",
+      method: "device",
+      authorizationUrl: null,
+      callbackUrl: null,
+      verificationUrl: "https://auth.example.com/device",
+      userCode: "ABCD-1234",
+      deviceAuthId: "device-auth-id",
+      intervalSeconds: 5,
+      expiresInSeconds: 600,
+    });
+    completeOauthMock.mockResolvedValue({ status: "pending" });
+
+    const { result } = renderHook(() => useOauth());
+
+    await act(async () => {
+      await result.current.start("device", { reauthAccountId: "acc_reauth" });
+    });
+
+    expect(startOauthMock).toHaveBeenCalledWith({
+      forceMethod: "device",
+      reauthAccountId: "acc_reauth",
+      expectProxy: false,
+    });
+    expect(completeOauthMock).toHaveBeenCalledWith({
+      flowId: "flow-reauth",
+      deviceAuthId: "device-auth-id",
+      userCode: "ABCD-1234",
+    });
+  });
+
   it("waits for an in-flight reset before starting a new OAuth attempt", async () => {
     let resolveReset!: (value: { status: string }) => void;
     resetOauthMock.mockReturnValue(
