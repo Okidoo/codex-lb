@@ -33,7 +33,7 @@ from app.core.clients.oauth import (
 from app.core.config.settings import get_settings
 from app.core.crypto import TokenEncryptor
 from app.core.plan_types import coerce_account_plan_type
-from app.core.upstream_proxy import ResolvedUpstreamRoute, resolve_upstream_route
+from app.core.upstream_proxy import ResolvedUpstreamRoute, UpstreamProxyRouteError, resolve_upstream_route
 from app.core.utils.time import utcnow
 from app.db.models import Account, AccountStatus
 from app.db.session import get_background_session
@@ -57,12 +57,15 @@ _PENDING_BROWSER_OAUTH_FLOW_TTL_SECONDS = 15 * 60
 
 async def _oauth_route() -> ResolvedUpstreamRoute | None:
     async with get_background_session() as session:
-        return await resolve_upstream_route(
-            session,
-            account_id=None,
-            operation="oauth",
-            scope="bootstrap",
-        )
+        try:
+            return await resolve_upstream_route(
+                session,
+                account_id=None,
+                operation="oauth",
+                scope="bootstrap",
+            )
+        except UpstreamProxyRouteError as exc:
+            raise OAuthError(exc.reason, str(exc), status_code=502) from exc
 
 
 @dataclass
