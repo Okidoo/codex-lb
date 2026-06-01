@@ -113,6 +113,19 @@ async def test_pre_response_failure_uses_same_pool_fallback(route: ResolvedUpstr
 
 
 @pytest.mark.asyncio
+async def test_non_idempotent_request_failure_does_not_fallback(route: ResolvedUpstreamRoute) -> None:
+    session = _Session(fail_first=True)
+    client = CodexClient(session)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        await client.request_with_route_metadata("POST", "https://upstream.test", route=route, json={"x": 1})
+
+    assert "ep_1" in str(exc_info.value)
+    assert len(session.calls) == 1
+    assert session.calls[0]["proxy"] == "http://u:p@proxy.test:8080"
+
+
+@pytest.mark.asyncio
 async def test_transport_errors_do_not_expose_proxy_credentials(route: ResolvedUpstreamRoute) -> None:
     client = CodexClient(_Session(fail_all=True))
 

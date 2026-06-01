@@ -203,7 +203,7 @@ async def test_connect_responses_websocket_uses_websockets_transport(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_connect_responses_websocket_routed_codex_call_omits_unsupported_size_kwarg(monkeypatch):
+async def test_connect_responses_websocket_routed_codex_call_preserves_size_limit(monkeypatch):
     route = ResolvedUpstreamRoute(
         mode="account_bound",
         pool_id="pool_1",
@@ -239,7 +239,7 @@ async def test_connect_responses_websocket_routed_codex_call_omits_unsupported_s
     assert call["url"] == "wss://chatgpt.com/backend-api/codex/responses"
     assert call["route"] is route
     assert call["timeout"] == 7.0
-    assert "max_message_size" not in call
+    assert call["max_message_size"] == 4321
     assert "max_size" not in call
 
 

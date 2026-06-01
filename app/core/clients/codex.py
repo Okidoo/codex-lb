@@ -58,6 +58,7 @@ class CodexClient:
             raise ValueError("Codex upstream calls require a resolved upstream proxy route")
         _reject_reserved(kwargs)
         endpoints = (route.endpoint, *route.fallbacks)
+        allow_fallback = _is_idempotent_method(method)
         for index, endpoint in enumerate(endpoints):
             candidate = route.with_endpoint(endpoint, tuple(endpoints[index + 1 :]))
             try:
@@ -66,7 +67,7 @@ class CodexClient:
                 )
                 return CodexRequestResult(response, candidate, index > 0)
             except Exception as exc:
-                if index == len(endpoints) - 1:
+                if index == len(endpoints) - 1 or not allow_fallback:
                     raise _transport_error("request", endpoint.id, exc) from None
         raise RuntimeError("unreachable Codex client fallback state")
 
@@ -133,6 +134,10 @@ def _reject_reserved(kwargs: Mapping[str, Any]) -> None:
     forbidden = sorted(_RESERVED.intersection(kwargs))
     if forbidden:
         raise ValueError(f"Codex upstream route/TLS kwargs are controlled centrally: {', '.join(forbidden)}")
+
+
+def _is_idempotent_method(method: str) -> bool:
+    return method.upper() in {"GET", "HEAD", "OPTIONS", "TRACE"}
 
 
 def _transport_error(operation: str, endpoint_id: str, exc: Exception) -> CodexTransportError:
