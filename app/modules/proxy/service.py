@@ -7355,7 +7355,21 @@ class ProxyService:
         retry_same_account_once = not skip_same_account
         preferred_candidate_id: str | None = None if skip_same_account else session.account.id
         selected_account_lease: AccountLease | None = None
+
+        async def release_selected_account_lease() -> None:
+            nonlocal selected_account_lease
+            lease = selected_account_lease
+            selected_account_lease = None
+            if lease is None:
+                return
+            if lease is session.account_lease:
+                session.account_lease = None
+            await self._load_balancer.release_account_lease(lease)
+
         while True:
+            reuse_current_account_lease = (
+                preferred_candidate_id == session.account.id and session.account_lease is not None
+            )
             selection = await self._select_account_with_budget_for_stream(
                 deadline,
                 request_id=request_state.request_log_id or request_state.request_id,
@@ -7371,13 +7385,15 @@ class ProxyService:
                 model=session.request_model,
                 exclude_account_ids=excluded_account_ids,
                 preferred_account_id=preferred_candidate_id,
-                lease_kind="stream",
+                lease_kind=None if reuse_current_account_lease else "stream",
+                fallback_on_preferred_account_unavailable=not reuse_current_account_lease,
             )
-            selected_account_lease = selection.lease
             account = selection.account
             if account is None:
-                await self._load_balancer.release_account_lease(selected_account_lease)
-                selected_account_lease = None
+                await release_selected_account_lease()
+                if reuse_current_account_lease and _remaining_budget_seconds(deadline) > 0:
+                    preferred_candidate_id = None
+                    continue
                 _record_same_account_takeover(
                     preferred_account_id=session.account.id,
                     selected_account_id=None,
@@ -7391,6 +7407,11 @@ class ProxyService:
                         error_type="rate_limit_error" if status_code == 429 else "server_error",
                     ),
                 )
+            selected_account_lease = (
+                session.account_lease
+                if reuse_current_account_lease and account.id == session.account.id
+                else selection.lease
+            )
             selected_is_preferred = account.id == session.account.id
             try:
                 account = await self._ensure_fresh_with_budget(
@@ -7413,8 +7434,7 @@ class ProxyService:
                 break
             except ProxyResponseError as exc:
                 if exc.status_code != 401 or _remaining_budget_seconds(deadline) <= 0:
-                    await self._load_balancer.release_account_lease(selected_account_lease)
-                    selected_account_lease = None
+                    await release_selected_account_lease()
                     raise
                 try:
                     account = await self._ensure_fresh_with_budget(
@@ -7438,22 +7458,19 @@ class ProxyService:
                     break
                 except ProxyResponseError as retry_exc:
                     if retry_exc.status_code != 401:
-                        await self._load_balancer.release_account_lease(selected_account_lease)
-                        selected_account_lease = None
+                        await release_selected_account_lease()
                         raise
                     await self._handle_proxy_error(account, retry_exc)
                     excluded_account_ids.add(account.id)
                     preferred_candidate_id = None
-                    await self._load_balancer.release_account_lease(selected_account_lease)
-                    selected_account_lease = None
+                    await release_selected_account_lease()
                     continue
                 except RefreshError as refresh_exc:
                     if refresh_exc.is_permanent:
                         await self._load_balancer.mark_permanent_failure(account, refresh_exc.code)
                     excluded_account_ids.add(account.id)
                     preferred_candidate_id = None
-                    await self._load_balancer.release_account_lease(selected_account_lease)
-                    selected_account_lease = None
+                    await release_selected_account_lease()
                     continue
             except RefreshError as exc:
                 if exc.is_permanent:
@@ -7461,33 +7478,28 @@ class ProxyService:
                 if selected_is_preferred and _remaining_budget_seconds(deadline) > 0:
                     if retry_same_account_once and not exc.is_permanent:
                         retry_same_account_once = False
-                        await self._load_balancer.release_account_lease(selected_account_lease)
-                        selected_account_lease = None
+                        await release_selected_account_lease()
                         continue
                     excluded_account_ids.add(account.id)
                     preferred_candidate_id = None
-                    await self._load_balancer.release_account_lease(selected_account_lease)
-                    selected_account_lease = None
+                    await release_selected_account_lease()
                     continue
-                await self._load_balancer.release_account_lease(selected_account_lease)
-                selected_account_lease = None
+                await release_selected_account_lease()
                 raise
             except (aiohttp.ClientError, asyncio.TimeoutError):
                 if selected_is_preferred and _remaining_budget_seconds(deadline) > 0:
                     if retry_same_account_once:
                         retry_same_account_once = False
-                        await self._load_balancer.release_account_lease(selected_account_lease)
-                        selected_account_lease = None
+                        await release_selected_account_lease()
                         continue
                     excluded_account_ids.add(account.id)
                     preferred_candidate_id = None
-                    await self._load_balancer.release_account_lease(selected_account_lease)
-                    selected_account_lease = None
+                    await release_selected_account_lease()
                     continue
-                await self._load_balancer.release_account_lease(selected_account_lease)
-                selected_account_lease = None
+                await release_selected_account_lease()
                 raise
-        await self._load_balancer.release_account_lease(session.account_lease)
+        if selected_account_lease is not session.account_lease:
+            await self._load_balancer.release_account_lease(session.account_lease)
         session.account_lease = selected_account_lease
         session.account = account
         session.headers = connect_headers
