@@ -1041,6 +1041,97 @@ async def test_select_account_with_budget_skips_preferred_account_outside_assign
     assert first_call.kwargs["account_ids"] == {"acc-allowed"}
 
 
+@pytest.mark.asyncio
+async def test_select_account_with_budget_required_file_pin_does_not_fallback_on_account_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = proxy_service.ProxyService(cast(Any, nullcontext()))
+    select_account = AsyncMock(
+        side_effect=[
+            proxy_service.AccountSelection(
+                account=None,
+                error_message="Account stream capacity is exhausted",
+                error_code="account_stream_cap",
+            ),
+            proxy_service.AccountSelection(
+                account=cast(Any, SimpleNamespace(id="acc-other")),
+                error_message=None,
+                error_code=None,
+            ),
+        ]
+    )
+    service._load_balancer = cast(Any, SimpleNamespace(select_account=select_account))
+    monkeypatch.setattr(
+        proxy_service,
+        "get_settings_cache",
+        lambda: SimpleNamespace(
+            get=AsyncMock(return_value=SimpleNamespace(sticky_reallocation_budget_threshold_pct=95.0))
+        ),
+    )
+
+    selection = await service._select_account_with_budget(
+        time.monotonic() + 60.0,
+        request_id="req-file-pin",
+        kind="stream",
+        request_stage="first_turn",
+        preferred_account_id="acc-file-owner",
+        lease_kind="stream",
+        fallback_on_preferred_account_unavailable=False,
+    )
+
+    assert selection.account is None
+    assert selection.error_code == "account_stream_cap"
+    assert select_account.await_count == 1
+    first_call = select_account.await_args_list[0]
+    assert first_call.kwargs["account_ids"] == {"acc-file-owner"}
+
+
+@pytest.mark.asyncio
+async def test_select_account_with_budget_soft_preference_can_fallback_after_account_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = proxy_service.ProxyService(cast(Any, nullcontext()))
+    select_account = AsyncMock(
+        side_effect=[
+            proxy_service.AccountSelection(
+                account=None,
+                error_message="Account stream capacity is exhausted",
+                error_code="account_stream_cap",
+            ),
+            proxy_service.AccountSelection(
+                account=cast(Any, SimpleNamespace(id="acc-other")),
+                error_message=None,
+                error_code=None,
+            ),
+        ]
+    )
+    service._load_balancer = cast(Any, SimpleNamespace(select_account=select_account))
+    monkeypatch.setattr(
+        proxy_service,
+        "get_settings_cache",
+        lambda: SimpleNamespace(
+            get=AsyncMock(return_value=SimpleNamespace(sticky_reallocation_budget_threshold_pct=95.0))
+        ),
+    )
+
+    selection = await service._select_account_with_budget(
+        time.monotonic() + 60.0,
+        request_id="req-soft-preferred",
+        kind="stream",
+        request_stage="first_turn",
+        preferred_account_id="acc-soft",
+        lease_kind="stream",
+    )
+
+    assert selection.account is not None
+    assert selection.account.id == "acc-other"
+    assert select_account.await_count == 2
+    first_call = select_account.await_args_list[0]
+    second_call = select_account.await_args_list[1]
+    assert first_call.kwargs["account_ids"] == {"acc-soft"}
+    assert second_call.kwargs["account_ids"] is None
+
+
 def test_headers_with_authorization_restores_missing_proxy_api_header() -> None:
     headers = proxy_service._headers_with_authorization({"x-request-id": "req-1"}, "Bearer proxy-key")
 
@@ -4839,6 +4930,7 @@ async def test_get_or_create_http_bridge_session_preserves_explicit_forwarded_af
         request_stage: str = "first_turn",
         preferred_account_id: str | None = None,
         require_preferred_account: bool = False,
+        fallback_on_preferred_account_unavailable: bool = True,
     ) -> proxy_service._HTTPBridgeSession:
         del (
             headers,
@@ -4849,6 +4941,7 @@ async def test_get_or_create_http_bridge_session_preserves_explicit_forwarded_af
             request_stage,
             preferred_account_id,
             require_preferred_account,
+            fallback_on_preferred_account_unavailable,
         )
         captured["key"] = create_key
         return created_session
@@ -4922,6 +5015,7 @@ async def test_get_or_create_http_bridge_session_falls_back_to_session_header_wh
         request_stage: str = "first_turn",
         preferred_account_id: str | None = None,
         require_preferred_account: bool = False,
+        fallback_on_preferred_account_unavailable: bool = True,
     ) -> proxy_service._HTTPBridgeSession:
         del (
             headers,
@@ -4932,6 +5026,7 @@ async def test_get_or_create_http_bridge_session_falls_back_to_session_header_wh
             request_stage,
             preferred_account_id,
             require_preferred_account,
+            fallback_on_preferred_account_unavailable,
         )
         captured["key"] = create_key
         return created_session
@@ -5005,6 +5100,7 @@ async def test_get_or_create_http_bridge_session_preserves_durable_canonical_pro
         request_stage: str = "first_turn",
         preferred_account_id: str | None = None,
         require_preferred_account: bool = False,
+        fallback_on_preferred_account_unavailable: bool = True,
     ) -> proxy_service._HTTPBridgeSession:
         del (
             headers,
@@ -5015,6 +5111,7 @@ async def test_get_or_create_http_bridge_session_preserves_durable_canonical_pro
             request_stage,
             preferred_account_id,
             require_preferred_account,
+            fallback_on_preferred_account_unavailable,
         )
         captured["key"] = create_key
         return created_session

@@ -908,16 +908,20 @@ class ProxyService:
                 session_id=request_state.session_id,
                 surface="http_bridge",
             )
+        file_required_preferred_account = False
         if request_state.preferred_account_id is None:
             # ``input_file.file_id`` references must land on the account
             # that registered the upload (chatgpt-account-id-scoped).
             # The helper returns ``None`` when stronger affinity signals
             # are present, so this never overrides existing routing.
-            request_state.preferred_account_id = rewritten_file_account_id
+            if rewritten_file_account_id is not None:
+                request_state.preferred_account_id = rewritten_file_account_id
+                file_required_preferred_account = True
         if request_state.preferred_account_id is None:
-            request_state.preferred_account_id = await self._resolve_file_account_for_responses(
-                effective_payload, headers
-            )
+            resolved_file_account_id = await self._resolve_file_account_for_responses(effective_payload, headers)
+            if resolved_file_account_id is not None:
+                request_state.preferred_account_id = resolved_file_account_id
+                file_required_preferred_account = True
         if proxy_injected_previous_response_id:
             request_state.proxy_injected_previous_response_id = True
             request_state.fresh_upstream_request_text = fresh_upstream_request_text or text_data
@@ -953,6 +957,7 @@ class ProxyService:
                 durable_lookup=durable_lookup,
                 request_stage=request_state.request_stage,
                 preferred_account_id=request_state.preferred_account_id,
+                fallback_on_preferred_account_unavailable=not file_required_preferred_account,
             )
         except ProxyResponseError as exc:
             if not (
@@ -987,9 +992,15 @@ class ProxyService:
                 payload=payload,
                 durable_lookup=None,
             )
-            request_state.preferred_account_id = rewritten_file_account_id
+            file_required_preferred_account = False
+            if rewritten_file_account_id is not None:
+                request_state.preferred_account_id = rewritten_file_account_id
+                file_required_preferred_account = True
             if request_state.preferred_account_id is None:
-                request_state.preferred_account_id = await self._resolve_file_account_for_responses(payload, headers)
+                resolved_file_account_id = await self._resolve_file_account_for_responses(payload, headers)
+                if resolved_file_account_id is not None:
+                    request_state.preferred_account_id = resolved_file_account_id
+                    file_required_preferred_account = True
             effective_payload = payload
             untrimmed_effective_payload = payload
             proxy_injected_previous_response_id = False
@@ -1019,6 +1030,7 @@ class ProxyService:
                 durable_lookup=None,
                 request_stage=request_state.request_stage,
                 preferred_account_id=request_state.preferred_account_id,
+                fallback_on_preferred_account_unavailable=not file_required_preferred_account,
             )
         if isinstance(session_or_forward, _HTTPBridgeOwnerForward):
             forwarded_any = False
@@ -2111,6 +2123,7 @@ class ProxyService:
                     exclude_account_ids=excluded_account_ids,
                     preferred_account_id=file_preferred_account_id,
                     lease_kind="response_create",
+                    fallback_on_preferred_account_unavailable=file_preferred_account_id is None,
                 )
                 account = selection.account
                 if not account:
@@ -5195,6 +5208,7 @@ class ProxyService:
         durable_lookup: DurableBridgeLookup | None = None,
         request_stage: str = "first_turn",
         preferred_account_id: str | None = None,
+        fallback_on_preferred_account_unavailable: bool = True,
     ) -> "_HTTPBridgeSession": ...
 
     @overload
@@ -5219,6 +5233,7 @@ class ProxyService:
         durable_lookup: DurableBridgeLookup | None = None,
         request_stage: str = "first_turn",
         preferred_account_id: str | None = None,
+        fallback_on_preferred_account_unavailable: bool = True,
     ) -> "_HTTPBridgeSession | _HTTPBridgeOwnerForward": ...
 
     async def _get_or_create_http_bridge_session(
@@ -5242,6 +5257,7 @@ class ProxyService:
         durable_lookup: DurableBridgeLookup | None = None,
         request_stage: str = "first_turn",
         preferred_account_id: str | None = None,
+        fallback_on_preferred_account_unavailable: bool = True,
     ) -> "_HTTPBridgeSession | _HTTPBridgeOwnerForward":
         settings = get_settings()
         api_key_id = api_key.id if api_key is not None else None
@@ -5325,6 +5341,7 @@ class ProxyService:
                                 session=alias_session,
                                 previous_response_id=previous_response_id,
                                 preferred_account_id=preferred_account_id,
+                                require_preferred_account=not fallback_on_preferred_account_unavailable,
                             )
                         ):
                             self._http_bridge_turn_state_index.pop(alias_index_key, None)
@@ -5358,6 +5375,7 @@ class ProxyService:
                                     session=previous_session,
                                     previous_response_id=previous_response_id,
                                     preferred_account_id=preferred_account_id,
+                                    require_preferred_account=not fallback_on_preferred_account_unavailable,
                                 )
                             ):
                                 key = previous_session.key
@@ -5402,6 +5420,7 @@ class ProxyService:
                         session=existing,
                         previous_response_id=previous_response_id,
                         preferred_account_id=preferred_account_id,
+                        require_preferred_account=not fallback_on_preferred_account_unavailable,
                     )
                 ):
                     current_instance = settings.http_responses_session_bridge_instance_id
@@ -6065,6 +6084,7 @@ class ProxyService:
                         session=session,
                         previous_response_id=previous_response_id,
                         preferred_account_id=preferred_account_id,
+                        require_preferred_account=not fallback_on_preferred_account_unavailable,
                     )
                 ):
                     current_instance = settings.http_responses_session_bridge_instance_id
@@ -6099,6 +6119,7 @@ class ProxyService:
                     request_stage=request_stage,
                     preferred_account_id=preferred_account_id,
                     require_preferred_account=require_preferred_account,
+                    fallback_on_preferred_account_unavailable=fallback_on_preferred_account_unavailable,
                 )
                 await self._claim_durable_http_bridge_session(
                     created_session,
@@ -6471,20 +6492,20 @@ class ProxyService:
 
     async def _select_account_with_budget_for_stream(self, deadline: float, **kwargs: Any) -> AccountSelection:
         selector = self._select_account_with_budget
-        if "lease_kind" in kwargs:
+        optional_kwargs = ("lease_kind", "fallback_on_preferred_account_unavailable")
+        if any(name in kwargs for name in optional_kwargs):
             try:
                 signature = inspect.signature(selector)
             except (TypeError, ValueError):
                 signature = None
-            if (
-                signature is not None
-                and "lease_kind" not in signature.parameters
-                and not any(
-                    parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in signature.parameters.values()
-                )
-            ):
+            accepts_var_keyword = signature is not None and any(
+                parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in signature.parameters.values()
+            )
+            if signature is not None and not accepts_var_keyword:
                 kwargs = dict(kwargs)
-                kwargs.pop("lease_kind", None)
+                for name in optional_kwargs:
+                    if name not in signature.parameters:
+                        kwargs.pop(name, None)
         return await selector(deadline, **kwargs)
 
     async def _create_http_bridge_session(
@@ -6499,6 +6520,7 @@ class ProxyService:
         request_stage: str = "first_turn",
         preferred_account_id: str | None = None,
         require_preferred_account: bool = False,
+        fallback_on_preferred_account_unavailable: bool = True,
     ) -> "_HTTPBridgeSession":
         request_state = _WebSocketRequestState(
             request_id=f"http_bridge_connect_{uuid4().hex}",
@@ -6531,6 +6553,7 @@ class ProxyService:
                 "exclude_account_ids": excluded_account_ids,
                 "preferred_account_id": preferred_candidate_id,
                 "lease_kind": "stream",
+                "fallback_on_preferred_account_unavailable": fallback_on_preferred_account_unavailable,
             }
             selection = await self._select_account_with_budget_for_stream(deadline, **select_kwargs)
             selected_account_lease = selection.lease
@@ -9860,6 +9883,7 @@ class ProxyService:
                     surface="http_stream",
                 )
                 require_preferred_account = preferred_account_id is not None
+            file_required_preferred_account = False
             if preferred_account_id is None:
                 # ``input_file.file_id`` references must land on the account
                 # that registered the upload; otherwise upstream rejects the
@@ -9867,9 +9891,14 @@ class ProxyService:
                 # priority -- it returns ``None`` when stronger affinity
                 # signals (prompt_cache_key / session header / turn_state
                 # header) are present, so this never overrides them.
-                preferred_account_id = rewritten_file_account_id
+                if rewritten_file_account_id is not None:
+                    preferred_account_id = rewritten_file_account_id
+                    file_required_preferred_account = True
             if preferred_account_id is None:
-                preferred_account_id = await self._resolve_file_account_for_responses(payload, headers)
+                resolved_file_account_id = await self._resolve_file_account_for_responses(payload, headers)
+                if resolved_file_account_id is not None:
+                    preferred_account_id = resolved_file_account_id
+                    file_required_preferred_account = True
             for attempt in range(max_attempts):
                 remaining_budget = _remaining_budget_seconds(deadline)
                 if remaining_budget <= 0:
@@ -9908,6 +9937,7 @@ class ProxyService:
                         exclude_account_ids=excluded_account_ids,
                         preferred_account_id=preferred_account_id,
                         lease_kind="stream",
+                        fallback_on_preferred_account_unavailable=not file_required_preferred_account,
                     )
                 except ProxyResponseError as exc:
                     error = _parse_openai_error(exc.payload)
@@ -11555,6 +11585,7 @@ class ProxyService:
         exclude_account_ids: Collection[str] | None = None,
         preferred_account_id: str | None = None,
         lease_kind: Literal["response_create", "stream"] | None = None,
+        fallback_on_preferred_account_unavailable: bool = True,
     ) -> AccountSelection:
         remaining_budget = _remaining_budget_seconds(deadline)
         if remaining_budget <= 0:
@@ -11571,11 +11602,20 @@ class ProxyService:
         try:
             with anyio.fail_after(remaining_budget):
                 settings = await get_settings_cache().get()
-                if (
+                preferred_account_selectable = (
                     preferred_account_id is not None
                     and preferred_account_id not in excluded_account_ids_set
                     and (scoped_account_ids is None or preferred_account_id in scoped_account_ids)
-                ):
+                )
+                if preferred_account_id is not None and not preferred_account_selectable:
+                    if not fallback_on_preferred_account_unavailable:
+                        return AccountSelection(
+                            account=None,
+                            error_message="Preferred account is unavailable",
+                            error_code="no_accounts",
+                        )
+                if preferred_account_selectable:
+                    assert preferred_account_id is not None
                     preferred_selection = await self._load_balancer.select_account(
                         sticky_key=sticky_key,
                         sticky_kind=sticky_kind,
@@ -11599,6 +11639,8 @@ class ProxyService:
                             request_stage,
                             preferred_account_id,
                         )
+                        return preferred_selection
+                    if not fallback_on_preferred_account_unavailable:
                         return preferred_selection
                 selection = await self._load_balancer.select_account(
                     sticky_key=sticky_key,
@@ -14625,8 +14667,11 @@ def _http_bridge_session_matches_preferred_account(
     session: "_HTTPBridgeSession",
     previous_response_id: str | None,
     preferred_account_id: str | None,
+    require_preferred_account: bool = False,
 ) -> bool:
-    if previous_response_id is None or preferred_account_id is None:
+    if preferred_account_id is None:
+        return True
+    if previous_response_id is None and not require_preferred_account:
         return True
     return session.account.id == preferred_account_id
 
