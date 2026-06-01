@@ -13910,6 +13910,7 @@ async def test_stream_previous_response_not_found_proxy_error_is_masked_to_strea
     request_logs = _RequestLogsRecorder()
     service = proxy_service.ProxyService(_repo_factory(request_logs))
     account = _make_account("acc_prev_missing_stream")
+    request_logs.response_owner_by_id[("resp_prev_anchor", None, "sid-stream")] = account.id
     record_error = AsyncMock()
     record_success = AsyncMock()
     counter = _ObservedCounter()
@@ -13980,6 +13981,7 @@ async def test_stream_missing_tool_output_proxy_error_is_masked_to_stream_incomp
     request_logs = _RequestLogsRecorder()
     service = proxy_service.ProxyService(_repo_factory(request_logs))
     account = _make_account("acc_missing_tool_output_stream")
+    request_logs.response_owner_by_id[("resp_prev_anchor", None, "sid-stream")] = account.id
     record_error = AsyncMock()
     record_success = AsyncMock()
     counter = _ObservedCounter()
