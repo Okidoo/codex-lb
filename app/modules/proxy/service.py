@@ -2278,7 +2278,7 @@ class ProxyService:
                             "route_trace": route_trace,
                         },
                     )
-                    if route_trace.endpoint_id is not None:
+                    if route_trace.mode is not None:
                         route_mode = route_trace.mode
                         route_pool_id = route_trace.pool_id
                         route_endpoint_id = route_trace.endpoint_id
@@ -2759,7 +2759,7 @@ class ProxyService:
                     allow_direct_egress=route is None,
                     route_trace=route_trace,
                 )
-                if route_trace.endpoint_id is not None:
+                if route_trace.mode is not None:
                     route_mode = route_trace.mode
                     route_pool_id = route_trace.pool_id
                     route_endpoint_id = route_trace.endpoint_id
@@ -3050,7 +3050,7 @@ class ProxyService:
                     allow_direct_egress=route is None,
                     route_trace=route_trace,
                 )
-                if route_trace.endpoint_id is not None:
+                if route_trace.mode is not None:
                     route_mode = route_trace.mode
                     route_pool_id = route_trace.pool_id
                     route_endpoint_id = route_trace.endpoint_id
@@ -3539,6 +3539,11 @@ class ProxyService:
                     )
                     _raise_proxy_budget_exhausted()
                 route = await self._resolve_upstream_route_for_account(target, operation="transcribe")
+                if route is not None:
+                    route_mode = route.mode
+                    route_pool_id = route.pool_id
+                    route_endpoint_id = route.endpoint_id
+                    route_fallback_used = False
                 route_trace = UpstreamProxyRouteTrace()
                 timeout_tokens = push_transcribe_timeout_overrides(
                     connect_timeout_seconds=remaining_budget,
@@ -3562,10 +3567,11 @@ class ProxyService:
                     )
                 finally:
                     pop_transcribe_timeout_overrides(timeout_tokens)
-                route_mode = route_trace.mode
-                route_pool_id = route_trace.pool_id
-                route_endpoint_id = route_trace.endpoint_id
-                route_fallback_used = route_trace.fallback_used
+                if route_trace.mode is not None:
+                    route_mode = route_trace.mode
+                    route_pool_id = route_trace.pool_id
+                    route_endpoint_id = route_trace.endpoint_id
+                    route_fallback_used = route_trace.fallback_used
                 return result
 
             async def _select_transcribe_failover(excluded_account_ids: set[str]) -> AccountSelection:
@@ -4086,7 +4092,7 @@ class ProxyService:
                 )
                 try:
                     result = await invoke(access_token, account_id, filtered, route, route_trace)
-                    if route_trace.endpoint_id is not None:
+                    if route_trace.mode is not None:
                         route_mode = route_trace.mode
                         route_pool_id = route_trace.pool_id
                         route_endpoint_id = route_trace.endpoint_id
