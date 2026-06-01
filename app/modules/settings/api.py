@@ -6,6 +6,7 @@ import socket
 
 from fastapi import APIRouter, Body, Depends, Request
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from app.core.audit.service import AuditService
 from app.core.auth.dependencies import set_dashboard_error_format, validate_dashboard_session
@@ -182,19 +183,26 @@ async def create_upstream_proxy_pool(
     payload: UpstreamProxyPoolCreateRequest,
     context: SettingsContext = Depends(get_settings_context),
 ) -> UpstreamProxyPoolResponse:
-    await _validate_proxy_endpoint_ids(context, payload.endpoint_ids)
+    endpoint_ids = list(dict.fromkeys(payload.endpoint_ids))
+    await _validate_proxy_endpoint_ids(context, endpoint_ids)
     pool = ProxyPool(name=payload.name, is_active=payload.is_active)
     context.session.add(pool)
     await context.session.flush()
-    for sort_order, endpoint_id in enumerate(payload.endpoint_ids):
+    for sort_order, endpoint_id in enumerate(endpoint_ids):
         context.session.add(ProxyPoolMember(pool_id=pool.id, endpoint_id=endpoint_id, sort_order=sort_order))
-    await context.session.commit()
+    try:
+        await context.session.commit()
+    except IntegrityError as exc:
+        await context.session.rollback()
+        if _is_missing_proxy_endpoint_error(exc):
+            raise DashboardBadRequestError("Proxy endpoint not found", code="proxy_endpoint_not_found")
+        raise
     await context.session.refresh(pool)
     return UpstreamProxyPoolResponse(
         id=pool.id,
         name=pool.name,
         is_active=pool.is_active,
-        endpoint_ids=payload.endpoint_ids,
+        endpoint_ids=endpoint_ids,
     )
 
 
@@ -217,7 +225,13 @@ async def add_upstream_proxy_pool_member(
             is_active=payload.is_active,
         )
     )
-    await context.session.commit()
+    try:
+        await context.session.commit()
+    except IntegrityError as exc:
+        await context.session.rollback()
+        if _is_missing_proxy_endpoint_error(exc):
+            raise DashboardBadRequestError("Proxy endpoint not found", code="proxy_endpoint_not_found")
+        raise
     endpoint_ids = (
         (
             await context.session.execute(
@@ -253,6 +267,11 @@ async def _validate_proxy_endpoint_ids(context: SettingsContext, endpoint_ids: l
             f"Proxy endpoint not found: {', '.join(missing_ids)}",
             code="proxy_endpoint_not_found",
         )
+
+
+def _is_missing_proxy_endpoint_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return "foreign key" in message or "fk constraint" in message or "violates foreign key constraint" in message
 
 
 @router.put("/upstream-proxy/accounts/{account_id}/binding", response_model=AccountProxyBindingResponse)

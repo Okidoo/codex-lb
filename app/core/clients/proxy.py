@@ -3689,6 +3689,18 @@ async def _transcribe_audio_with_session(
                     response = await active_codex_client.request("POST", url, route=route, **request_kwargs)
                     if route_trace is not None:
                         route_trace.record(route=route, fallback_used=False)
+            except CodexTransportError as exc:
+                error_code = "upstream_unavailable"
+                error_message = _codex_route_transport_error_message(
+                    route=route,
+                    route_trace=route_trace,
+                    operation="transcribe",
+                    exc=exc,
+                )
+                raise ProxyResponseError(
+                    502,
+                    openai_error("upstream_unavailable", error_message),
+                ) from exc
             finally:
                 if owns_codex_client:
                     await active_codex_client.close()
