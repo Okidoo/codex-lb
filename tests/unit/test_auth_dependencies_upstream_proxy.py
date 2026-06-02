@@ -25,9 +25,14 @@ def _account() -> Account:
     )
 
 
+async def _single_active_account_ids(chatgpt_account_id: str, *, limit: int = 100) -> list[str]:
+    assert chatgpt_account_id == "chatgpt_1"
+    assert limit == 2
+    return ["acc_1"]
+
+
 @pytest.mark.asyncio
 async def test_validate_codex_usage_identity_passes_resolved_route(monkeypatch: pytest.MonkeyPatch) -> None:
-    account = _account()
     route = ResolvedUpstreamRoute(
         mode="account_bound",
         pool_id="pool_1",
@@ -39,9 +44,14 @@ async def test_validate_codex_usage_identity_passes_resolved_route(monkeypatch: 
         def __init__(self, session: object) -> None:
             calls["repo_session"] = session
 
-        async def get_active_by_chatgpt_account_id(self, chatgpt_account_id: str) -> Account | None:
+        async def list_active_account_ids_by_chatgpt_account_id(
+            self,
+            chatgpt_account_id: str,
+            *,
+            limit: int = 100,
+        ) -> list[str]:
             calls["lookup"] = chatgpt_account_id
-            return account
+            return await _single_active_account_ids(chatgpt_account_id, limit=limit)
 
     @asynccontextmanager
     async def session_context():
@@ -74,14 +84,17 @@ async def test_validate_codex_usage_identity_passes_resolved_route(monkeypatch: 
 async def test_validate_codex_usage_identity_fails_closed_when_route_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    account = _account()
-
     class Repo:
         def __init__(self, session: object) -> None:
             pass
 
-        async def get_active_by_chatgpt_account_id(self, chatgpt_account_id: str) -> Account | None:
-            return account
+        async def list_active_account_ids_by_chatgpt_account_id(
+            self,
+            chatgpt_account_id: str,
+            *,
+            limit: int = 100,
+        ) -> list[str]:
+            return await _single_active_account_ids(chatgpt_account_id, limit=limit)
 
     @asynccontextmanager
     async def session_context():

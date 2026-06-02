@@ -4,8 +4,7 @@ import { toast } from "sonner";
 import {
   clearAccountProxy,
   deleteAccount,
-  exportAccount,
-  exportAccountOpenCodeAuth,
+  exportAccountAuth,
   getAccountTrends,
   importAccount,
   listAccounts,
@@ -89,25 +88,6 @@ export function useAccountMutations() {
     },
   });
 
-  const exportMutation = useMutation({
-    mutationFn: exportAccount,
-    onSuccess: (data) => {
-      const blob = new Blob([data.authJson], { type: "application/json" });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = "auth.json";
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
-      toast.success("Account exported");
-    },
-    onError: (error: Error) => {
-      toast.error(error.message || "Export failed");
-    },
-  });
-
   const limitWarmupMutation = useMutation({
     mutationFn: ({ accountId, enabled }: { accountId: string; enabled: boolean }) =>
       updateAccountLimitWarmup(accountId, enabled),
@@ -120,10 +100,10 @@ export function useAccountMutations() {
     },
   });
 
-  const exportOpenCodeAuthMutation = useMutation({
-    mutationFn: exportAccountOpenCodeAuth,
+  const exportAuthMutation = useMutation({
+    mutationFn: exportAccountAuth,
     onSuccess: () => {
-      toast.success("OpenCode auth export generated");
+      toast.success("Account exported");
     },
     onError: (error: Error) => {
       toast.error(error.message || "Export failed");
@@ -136,9 +116,8 @@ export function useAccountMutations() {
     resumeMutation,
     setAliasMutation,
     deleteMutation,
-    exportMutation,
+    exportAuthMutation,
     limitWarmupMutation,
-    exportOpenCodeAuthMutation,
   };
 }
 

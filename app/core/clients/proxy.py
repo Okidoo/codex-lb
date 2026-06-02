@@ -409,6 +409,7 @@ class ProxyResponseError(Exception):
         failure_detail: str | None = None,
         failure_exception_type: str | None = None,
         upstream_status_code: int | None = None,
+        upstream_error_code: str | None = None,
     ) -> None:
         super().__init__(f"Proxy response error ({status_code})")
         self.status_code = status_code
@@ -418,6 +419,7 @@ class ProxyResponseError(Exception):
         self.failure_detail = failure_detail
         self.failure_exception_type = failure_exception_type
         self.upstream_status_code = upstream_status_code
+        self.upstream_error_code = upstream_error_code
 
 
 @dataclass(frozen=True)
@@ -3333,25 +3335,47 @@ async def thread_goal_request(
         ) as resp:
             status_code = resp.status
             if resp.status >= 400:
-                error_payload = await _error_payload_from_response(resp)
+                try:
+                    error_payload = await _error_payload_from_response(resp)
+                except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                    message = str(exc) or "Request to upstream timed out"
+                    error_code = "upstream_unavailable"
+                    error_message = message
+                    raise ProxyResponseError(
+                        resp.status,
+                        openai_error("upstream_unavailable", message),
+                        failure_phase="status",
+                    ) from exc
                 error_code, error_message = _error_details_from_envelope(error_payload)
-                raise ProxyResponseError(resp.status, error_payload)
+                raise ProxyResponseError(resp.status, error_payload, failure_phase="status")
             try:
                 data = await resp.json(content_type=None)
             except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
                 message = str(exc) or "Request to upstream timed out"
                 error_code = "upstream_unavailable"
                 error_message = message
-                raise ProxyResponseError(502, openai_error("upstream_unavailable", message)) from exc
+                raise ProxyResponseError(
+                    502,
+                    openai_error("upstream_unavailable", message),
+                    failure_phase="body_read",
+                ) from exc
             except Exception as exc:
                 error_code = "upstream_error"
                 error_message = "Invalid JSON from upstream"
-                raise ProxyResponseError(502, openai_error("upstream_error", "Invalid JSON from upstream")) from exc
+                raise ProxyResponseError(
+                    502,
+                    openai_error("upstream_error", "Invalid JSON from upstream"),
+                    failure_phase="parse",
+                ) from exc
             if isinstance(data, dict):
                 return cast(dict[str, JsonValue], data)
             error_code = "upstream_error"
             error_message = "Unexpected upstream payload"
-            raise ProxyResponseError(502, openai_error("upstream_error", "Unexpected upstream payload"))
+            raise ProxyResponseError(
+                502,
+                openai_error("upstream_error", "Unexpected upstream payload"),
+                failure_phase="parse",
+            )
     except ProxyResponseError as exc:
         if error_code is None and error_message is None:
             error_code, error_message = _error_details_from_envelope(exc.payload)
@@ -3359,19 +3383,31 @@ async def thread_goal_request(
     except CircuitBreakerOpenError as exc:
         error_code = "upstream_unavailable"
         error_message = "Upstream circuit breaker is open"
-        raise ProxyResponseError(503, openai_error("upstream_unavailable", error_message)) from exc
+        raise ProxyResponseError(
+            503,
+            openai_error("upstream_unavailable", error_message),
+            failure_phase="connect",
+        ) from exc
     except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
         message = str(exc) or "Request to upstream timed out"
         error_code = "upstream_unavailable"
         error_message = message
-        raise ProxyResponseError(502, openai_error("upstream_unavailable", message)) from exc
+        raise ProxyResponseError(
+            502,
+            openai_error("upstream_unavailable", message),
+            failure_phase="connect",
+        ) from exc
     except Exception as exc:
         if route is None:
             raise
         message = str(exc) or "Request to upstream failed before response"
         error_code = "upstream_unavailable"
         error_message = message
-        raise ProxyResponseError(502, openai_error("upstream_unavailable", message)) from exc
+        raise ProxyResponseError(
+            502,
+            openai_error("upstream_unavailable", message),
+            failure_phase="connect",
+        ) from exc
     finally:
         try:
             _maybe_log_upstream_request_complete(
@@ -3520,11 +3556,21 @@ async def codex_control_request(
             account_id=account_id,
         ) as resp:
             status_code = resp.status
-            body = await resp.read()
+            try:
+                body = await resp.read()
+            except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                message = str(exc) or "Request to upstream timed out"
+                error_code = "upstream_unavailable"
+                error_message = message
+                raise ProxyResponseError(
+                    502,
+                    openai_error("upstream_unavailable", message),
+                    failure_phase="body_read",
+                ) from exc
             if resp.status >= 400:
                 error_payload = await _error_payload_from_raw_body(resp, body)
                 error_code, error_message = _error_details_from_envelope(error_payload)
-                raise ProxyResponseError(resp.status, error_payload)
+                raise ProxyResponseError(resp.status, error_payload, failure_phase="status")
             return CodexControlResponse(
                 status_code=resp.status,
                 body=body,
@@ -3537,19 +3583,31 @@ async def codex_control_request(
     except CircuitBreakerOpenError as exc:
         error_code = "upstream_unavailable"
         error_message = "Upstream circuit breaker is open"
-        raise ProxyResponseError(503, openai_error("upstream_unavailable", error_message)) from exc
+        raise ProxyResponseError(
+            503,
+            openai_error("upstream_unavailable", error_message),
+            failure_phase="connect",
+        ) from exc
     except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
         message = str(exc) or "Request to upstream timed out"
         error_code = "upstream_unavailable"
         error_message = message
-        raise ProxyResponseError(502, openai_error("upstream_unavailable", message)) from exc
+        raise ProxyResponseError(
+            502,
+            openai_error("upstream_unavailable", message),
+            failure_phase="connect",
+        ) from exc
     except Exception as exc:
         if route is None:
             raise
         message = str(exc) or "Request to upstream failed before response"
         error_code = "upstream_unavailable"
         error_message = message
-        raise ProxyResponseError(502, openai_error("upstream_unavailable", message)) from exc
+        raise ProxyResponseError(
+            502,
+            openai_error("upstream_unavailable", message),
+            failure_phase="connect",
+        ) from exc
     finally:
         try:
             _maybe_log_upstream_request_complete(
@@ -3764,9 +3822,19 @@ async def _transcribe_audio_with_session(
         ) as resp:
             status_code = resp.status
             if resp.status >= 400:
-                error_payload = await _error_payload_from_response(resp)
+                try:
+                    error_payload = await _error_payload_from_response(resp)
+                except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                    message = str(exc) or "Request to upstream timed out"
+                    error_code = "upstream_unavailable"
+                    error_message = message
+                    raise ProxyResponseError(
+                        resp.status,
+                        openai_error("upstream_unavailable", message),
+                        failure_phase="status",
+                    ) from exc
                 error_code, error_message = _error_details_from_envelope(error_payload)
-                raise ProxyResponseError(resp.status, error_payload)
+                raise ProxyResponseError(resp.status, error_payload, failure_phase="status")
             try:
                 data = await resp.json(content_type=None)
             except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
@@ -3776,6 +3844,7 @@ async def _transcribe_audio_with_session(
                 raise ProxyResponseError(
                     502,
                     openai_error("upstream_unavailable", message),
+                    failure_phase="body_read",
                 ) from exc
             except Exception as exc:
                 error_code = "upstream_error"
@@ -3783,12 +3852,14 @@ async def _transcribe_audio_with_session(
                 raise ProxyResponseError(
                     502,
                     openai_error("upstream_error", "Invalid JSON from upstream"),
+                    failure_phase="parse",
                 ) from exc
             if isinstance(data, dict):
                 return data
             raise ProxyResponseError(
                 502,
                 openai_error("upstream_error", "Unexpected upstream payload"),
+                failure_phase="parse",
             )
     except ProxyResponseError as exc:
         if error_code is None and error_message is None:
@@ -3800,6 +3871,7 @@ async def _transcribe_audio_with_session(
         raise ProxyResponseError(
             503,
             openai_error("upstream_unavailable", error_message),
+            failure_phase="connect",
         ) from exc
     except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
         message = str(exc) or "Request to upstream timed out"
@@ -3808,6 +3880,7 @@ async def _transcribe_audio_with_session(
         raise ProxyResponseError(
             502,
             openai_error("upstream_unavailable", message),
+            failure_phase="connect",
         ) from exc
     except Exception as exc:
         if route is None:

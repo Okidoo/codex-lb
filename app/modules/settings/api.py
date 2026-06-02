@@ -101,6 +101,7 @@ async def get_settings(
         http_responses_session_bridge_prompt_cache_idle_ttl_seconds=settings.http_responses_session_bridge_prompt_cache_idle_ttl_seconds,
         http_responses_session_bridge_gateway_safe_mode=settings.http_responses_session_bridge_gateway_safe_mode,
         sticky_reallocation_budget_threshold_pct=settings.sticky_reallocation_budget_threshold_pct,
+        warmup_model=settings.warmup_model,
         import_without_overwrite=settings.import_without_overwrite,
         totp_required_on_login=settings.totp_required_on_login,
         totp_configured=settings.totp_configured,
@@ -339,7 +340,11 @@ async def update_settings(
     try:
         updated = await context.service.update_settings(
             DashboardSettingsUpdateData(
-                sticky_threads_enabled=payload.sticky_threads_enabled,
+                sticky_threads_enabled=(
+                    payload.sticky_threads_enabled
+                    if payload.sticky_threads_enabled is not None
+                    else current.sticky_threads_enabled
+                ),
                 upstream_stream_transport=payload.upstream_stream_transport or current.upstream_stream_transport,
                 upstream_proxy_routing_enabled=(
                     payload.upstream_proxy_routing_enabled
@@ -351,7 +356,11 @@ async def update_settings(
                     if "upstream_proxy_default_pool_id" in payload.model_fields_set
                     else current.upstream_proxy_default_pool_id
                 ),
-                prefer_earlier_reset_accounts=payload.prefer_earlier_reset_accounts,
+                prefer_earlier_reset_accounts=(
+                    payload.prefer_earlier_reset_accounts
+                    if payload.prefer_earlier_reset_accounts is not None
+                    else current.prefer_earlier_reset_accounts
+                ),
                 routing_strategy=payload.routing_strategy or current.routing_strategy,
                 relative_availability_power=(
                     payload.relative_availability_power
@@ -388,6 +397,7 @@ async def update_settings(
                     if payload.sticky_reallocation_budget_threshold_pct is not None
                     else current.sticky_reallocation_budget_threshold_pct
                 ),
+                warmup_model=(payload.warmup_model if payload.warmup_model is not None else current.warmup_model),
                 import_without_overwrite=(
                     payload.import_without_overwrite
                     if payload.import_without_overwrite is not None
@@ -443,6 +453,7 @@ async def update_settings(
             "http_responses_session_bridge_prompt_cache_idle_ttl_seconds",
             "http_responses_session_bridge_gateway_safe_mode",
             "sticky_reallocation_budget_threshold_pct",
+            "warmup_model",
             "import_without_overwrite",
             "totp_required_on_login",
             "api_key_auth_enabled",
@@ -474,6 +485,7 @@ async def update_settings(
         http_responses_session_bridge_prompt_cache_idle_ttl_seconds=updated.http_responses_session_bridge_prompt_cache_idle_ttl_seconds,
         http_responses_session_bridge_gateway_safe_mode=updated.http_responses_session_bridge_gateway_safe_mode,
         sticky_reallocation_budget_threshold_pct=updated.sticky_reallocation_budget_threshold_pct,
+        warmup_model=updated.warmup_model,
         import_without_overwrite=updated.import_without_overwrite,
         totp_required_on_login=updated.totp_required_on_login,
         totp_configured=updated.totp_configured,

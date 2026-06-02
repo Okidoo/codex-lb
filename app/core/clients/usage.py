@@ -55,6 +55,7 @@ async def fetch_usage(
     *,
     access_token: str,
     account_id: str | None,
+    lease_account_id: str | None = None,
     base_url: str | None = None,
     timeout_seconds: float | None = None,
     max_retries: int | None = None,
@@ -63,6 +64,7 @@ async def fetch_usage(
     codex_client: CodexClient | None = None,
     allow_direct_egress: bool = False,
 ) -> UsagePayload:
+    del lease_account_id
     settings = get_settings()
     usage_base = base_url or settings.upstream_base_url
     url = _usage_url(usage_base)

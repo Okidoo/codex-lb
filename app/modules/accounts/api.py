@@ -6,6 +6,7 @@ from pydantic import ValidationError
 
 from app.core.audit.service import AuditService
 from app.core.auth.dependencies import set_dashboard_error_format, validate_dashboard_session
+from app.core.auth.refresh import RefreshError
 from app.core.clients.account_proxy_probe import ProxyProbeError
 from app.core.errors import dashboard_error
 from app.core.exceptions import DashboardBadRequestError, DashboardConflictError, DashboardNotFoundError
@@ -14,6 +15,7 @@ from app.modules.accounts.repository import AccountIdentityConflictError
 from app.modules.accounts.schemas import (
     AccountAliasRequest,
     AccountAliasResponse,
+    AccountAuthExportResponse,
     AccountDeleteResponse,
     AccountExportResponse,
     AccountImportResponse,
@@ -21,6 +23,8 @@ from app.modules.accounts.schemas import (
     AccountLimitWarmupUpdateResponse,
     AccountOpenCodeAuthExportResponse,
     AccountPauseResponse,
+    AccountProbeRequest,
+    AccountProbeResponse,
     AccountProxyClearResponse,
     AccountProxyInput,
     AccountProxySummary,
@@ -31,6 +35,7 @@ from app.modules.accounts.schemas import (
 from app.modules.accounts.service import (
     AccountCredentialsUnrecoverableError,
     AccountNotFoundError,
+    AccountNotProbableError,
     InvalidAuthJsonError,
     ProxyPasswordUnrecoverableError,
 )
@@ -61,7 +66,7 @@ async def get_account_trends(
     return result
 
 
-@router.post("/{account_id}/export", response_model=AccountExportResponse)
+@router.post("/{account_id}/export", response_model=AccountExportResponse, deprecated=True)
 async def export_account(
     request: Request,
     response: Response,
@@ -82,7 +87,28 @@ async def export_account(
     return result
 
 
-@router.post("/{account_id}/export/opencode-auth", response_model=AccountOpenCodeAuthExportResponse)
+@router.post("/{account_id}/export/auth", response_model=AccountAuthExportResponse)
+async def export_account_auth(
+    request: Request,
+    response: Response,
+    account_id: str,
+    context: AccountsContext = Depends(get_accounts_context),
+) -> AccountAuthExportResponse:
+    result = await context.service.export_auth(account_id)
+    if not result:
+        raise DashboardNotFoundError("Account not found", code="account_not_found")
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, private"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    AuditService.log_async(
+        "account_auth_exported",
+        actor_ip=request.client.host if request.client else None,
+        details={"account_id": account_id},
+    )
+    return result
+
+
+@router.post("/{account_id}/export/opencode-auth", response_model=AccountOpenCodeAuthExportResponse, deprecated=True)
 async def export_account_opencode_auth(
     request: Request,
     response: Response,
@@ -172,6 +198,37 @@ async def reactivate_account(
     if not success:
         raise DashboardNotFoundError("Account not found", code="account_not_found")
     return AccountReactivateResponse(status="reactivated")
+
+
+@router.post("/{account_id}/probe", response_model=AccountProbeResponse)
+async def probe_account(
+    request: Request,
+    account_id: str,
+    body: AccountProbeRequest | None = None,
+    context: AccountsContext = Depends(get_accounts_context),
+) -> AccountProbeResponse:
+    requested_model = body.model if body is not None else None
+    try:
+        result = await context.service.probe_account(account_id, model=requested_model)
+    except AccountNotProbableError as exc:
+        raise DashboardConflictError(str(exc), code="account_not_probable") from exc
+    except RefreshError as exc:
+        raise DashboardConflictError(
+            f"Probe could not refresh account credentials: {exc.message}",
+            code="account_probe_refresh_failed",
+        ) from exc
+    if result is None:
+        raise DashboardNotFoundError("Account not found", code="account_not_found")
+    AuditService.log_async(
+        "account_probed",
+        actor_ip=request.client.host if request.client else None,
+        details={
+            "account_id": result.account_id,
+            "probe_status_code": result.probe_status_code,
+            "model": requested_model,
+        },
+    )
+    return result
 
 
 @router.post("/{account_id}/pause", response_model=AccountPauseResponse)

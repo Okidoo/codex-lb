@@ -20,6 +20,7 @@ class DashboardSettingsData:
     http_responses_session_bridge_prompt_cache_idle_ttl_seconds: int
     http_responses_session_bridge_gateway_safe_mode: bool
     sticky_reallocation_budget_threshold_pct: float
+    warmup_model: str
     import_without_overwrite: bool
     totp_required_on_login: bool
     totp_configured: bool
@@ -47,6 +48,7 @@ class DashboardSettingsUpdateData:
     http_responses_session_bridge_prompt_cache_idle_ttl_seconds: int
     http_responses_session_bridge_gateway_safe_mode: bool
     sticky_reallocation_budget_threshold_pct: float
+    warmup_model: str
     import_without_overwrite: bool
     totp_required_on_login: bool
     api_key_auth_enabled: bool
@@ -80,6 +82,7 @@ class SettingsService:
             ),
             http_responses_session_bridge_gateway_safe_mode=row.http_responses_session_bridge_gateway_safe_mode,
             sticky_reallocation_budget_threshold_pct=row.sticky_reallocation_budget_threshold_pct,
+            warmup_model=row.warmup_model,
             import_without_overwrite=row.import_without_overwrite,
             totp_required_on_login=row.totp_required_on_login,
             totp_configured=row.totp_secret_encrypted is not None,
@@ -112,6 +115,7 @@ class SettingsService:
             ),
             http_responses_session_bridge_gateway_safe_mode=payload.http_responses_session_bridge_gateway_safe_mode,
             sticky_reallocation_budget_threshold_pct=payload.sticky_reallocation_budget_threshold_pct,
+            warmup_model=payload.warmup_model,
             import_without_overwrite=payload.import_without_overwrite,
             totp_required_on_login=payload.totp_required_on_login,
             api_key_auth_enabled=payload.api_key_auth_enabled,
@@ -138,6 +142,7 @@ class SettingsService:
             ),
             http_responses_session_bridge_gateway_safe_mode=row.http_responses_session_bridge_gateway_safe_mode,
             sticky_reallocation_budget_threshold_pct=row.sticky_reallocation_budget_threshold_pct,
+            warmup_model=row.warmup_model,
             import_without_overwrite=row.import_without_overwrite,
             totp_required_on_login=row.totp_required_on_login,
             totp_configured=row.totp_secret_encrypted is not None,

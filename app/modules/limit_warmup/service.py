@@ -28,6 +28,7 @@ from app.modules.usage.mappers import usage_history_to_window_row
 logger = logging.getLogger(__name__)
 
 LIMIT_WARMUP_SOURCE = "limit_warmup"
+LIMIT_WARMUP_REQUEST_KIND = "warmup"
 LIMIT_WARMUP_HEADER = "x-codex-lb-limit-warmup"
 _DEFAULT_WARMUP_INSTRUCTIONS = "Reply with OK only."
 _TERMINAL_ERROR_EVENTS = {"response.failed", "response.incomplete", "error"}
@@ -118,6 +119,13 @@ class LimitWarmupRequestLogRepository(Protocol):
         upstream_proxy_endpoint_id: str | None = None,
         upstream_proxy_fallback_used: bool | None = None,
         upstream_proxy_fail_closed_reason: str | None = None,
+        failure_phase: str | None = None,
+        failure_detail: str | None = None,
+        failure_exception_type: str | None = None,
+        upstream_status_code: int | None = None,
+        upstream_error_code: str | None = None,
+        bridge_stage: str | None = None,
+        request_kind: str = "normal",
     ) -> object: ...
 
 
@@ -578,6 +586,7 @@ class LimitWarmupService:
             upstream_proxy_endpoint_id=result.upstream_proxy_endpoint_id,
             upstream_proxy_fallback_used=result.upstream_proxy_fallback_used,
             upstream_proxy_fail_closed_reason=result.upstream_proxy_fail_closed_reason,
+            request_kind=LIMIT_WARMUP_REQUEST_KIND,
         )
 
 

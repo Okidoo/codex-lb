@@ -188,10 +188,10 @@ async def validate_codex_usage_identity(request: Request) -> ApiKeyData | None:
 
     async with get_background_session() as session:
         accounts_repo = AccountsRepository(session)
-        account = await accounts_repo.get_active_by_chatgpt_account_id(account_id)
-        if account is None:
+        local_account_ids = await accounts_repo.list_active_account_ids_by_chatgpt_account_id(account_id, limit=2)
+        if not local_account_ids:
             raise ProxyAuthError("Unknown or inactive chatgpt-account-id")
-        local_account_id = account.id
+        local_account_id = local_account_ids[0] if len(local_account_ids) == 1 else None
         try:
             route = await resolve_upstream_route(
                 session,

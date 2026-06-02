@@ -123,10 +123,11 @@ class FileProxyError(Exception):
     non-JSON.
     """
 
-    def __init__(self, status_code: int, payload: Any) -> None:
+    def __init__(self, status_code: int, payload: Any, *, failure_phase: str | None = None) -> None:
         super().__init__(f"upstream file request failed: status={status_code}")
         self.status_code = status_code
         self.payload = payload
+        self.failure_phase = failure_phase
 
 
 def _build_files_headers(
@@ -226,9 +227,17 @@ async def create_file(
                 headers=upstream_headers,
                 timeout=timeout,
             ) as response:
-                text = await response.text()
+                try:
+                    text = await response.text()
+                except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                    message = str(exc) or "Request to upstream timed out"
+                    raise FileProxyError(
+                        502,
+                        openai_error("upstream_unavailable", message),
+                        failure_phase="body_read",
+                    ) from exc
                 if response.status >= 400:
-                    raise FileProxyError(response.status, _parse_upstream_error_body(text))
+                    raise FileProxyError(response.status, _parse_upstream_error_body(text), failure_phase="status")
                 try:
                     parsed = json.loads(text)
                 except json.JSONDecodeError as exc:
@@ -238,6 +247,7 @@ async def create_file(
                             "upstream_error",
                             f"Upstream /files response was not JSON: {exc}",
                         ),
+                        failure_phase="parse",
                     ) from exc
                 if not isinstance(parsed, dict):
                     raise FileProxyError(
@@ -246,6 +256,7 @@ async def create_file(
                             "upstream_error",
                             "Upstream /files response was not a JSON object",
                         ),
+                        failure_phase="parse",
                     )
                 return parsed
     except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
@@ -253,6 +264,7 @@ async def create_file(
         raise FileProxyError(
             502,
             openai_error("upstream_unavailable", message),
+            failure_phase="connect",
         ) from exc
 
 
@@ -373,9 +385,17 @@ async def finalize_file(
                     headers=upstream_headers,
                     timeout=timeout,
                 ) as response:
-                    text = await response.text()
+                    try:
+                        text = await response.text()
+                    except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                        message = str(exc) or "Request to upstream timed out"
+                        raise FileProxyError(
+                            502,
+                            openai_error("upstream_unavailable", message),
+                            failure_phase="body_read",
+                        ) from exc
                     if response.status >= 400:
-                        raise FileProxyError(response.status, _parse_upstream_error_body(text))
+                        raise FileProxyError(response.status, _parse_upstream_error_body(text), failure_phase="status")
                     try:
                         parsed = json.loads(text)
                     except json.JSONDecodeError as exc:
@@ -385,6 +405,7 @@ async def finalize_file(
                                 "upstream_error",
                                 f"Upstream /files/{file_id}/uploaded response was not JSON: {exc}",
                             ),
+                            failure_phase="parse",
                         ) from exc
                     if not isinstance(parsed, dict):
                         raise FileProxyError(
@@ -393,12 +414,14 @@ async def finalize_file(
                                 "upstream_error",
                                 "Upstream /files/{file_id}/uploaded response was not a JSON object",
                             ),
+                            failure_phase="parse",
                         )
             except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
                 message = str(exc) or "Request to upstream timed out"
                 raise FileProxyError(
                     502,
                     openai_error("upstream_unavailable", message),
+                    failure_phase="connect",
                 ) from exc
 
             status = parsed.get("status")

@@ -20,9 +20,13 @@ from app.core.auth import (
     DEFAULT_EMAIL,
     DEFAULT_PLAN,
     OpenAIAuthClaims,
+    clean_account_identity_part,
     extract_id_token_claims,
     generate_unique_account_id,
+    normalize_seat_type,
 )
+from app.core.auth.api_key_cache import get_api_key_cache
+from app.core.cache.invalidation import NAMESPACE_API_KEY, get_cache_invalidation_poller
 from app.core.clients.account_http import invalidate_account_client
 from app.core.clients.account_proxy_probe import (
     ProxyProbeError,
@@ -887,6 +891,7 @@ class OauthService:
                 await self._persist_account(repo, account, reauth_account_id=reauth_account_id)
         else:
             await self._persist_account(self._accounts_repo, account, reauth_account_id=reauth_account_id)
+        await self._invalidate_account_routing_caches()
 
     async def _persist_account(
         self,
@@ -896,7 +901,7 @@ class OauthService:
         reauth_account_id: str | None,
     ) -> None:
         if reauth_account_id is None:
-            await repo.upsert(account)
+            await repo.upsert(account, merge_by_email=False, merge_by_chatgpt_identity=True)
             return
         saved = await repo.reauthenticate_account(reauth_account_id, account)
         if saved is None:
@@ -904,12 +909,22 @@ class OauthService:
         await invalidate_account_client(saved.id)
         get_account_selection_cache().invalidate()
 
+    async def _invalidate_account_routing_caches(self) -> None:
+        get_account_selection_cache().invalidate()
+        get_api_key_cache().clear()
+        poller = get_cache_invalidation_poller()
+        if poller is not None:
+            await poller.bump(NAMESPACE_API_KEY)
+
     def _build_account_from_tokens(self, tokens: OAuthTokens) -> Account:
         claims = extract_id_token_claims(tokens.id_token)
         auth_claims = claims.auth or OpenAIAuthClaims()
         raw_account_id = auth_claims.chatgpt_account_id or claims.chatgpt_account_id
         email = claims.email or DEFAULT_EMAIL
-        account_id = generate_unique_account_id(raw_account_id, email)
+        workspace_id = clean_account_identity_part(auth_claims.workspace_id or claims.workspace_id)
+        workspace_label = clean_account_identity_part(auth_claims.workspace_label or claims.workspace_label)
+        seat_type = normalize_seat_type(auth_claims.seat_type or claims.seat_type)
+        account_id = generate_unique_account_id(raw_account_id, email, workspace_id)
         plan_type = coerce_account_plan_type(
             auth_claims.chatgpt_plan_type or claims.chatgpt_plan_type,
             DEFAULT_PLAN,
@@ -919,6 +934,9 @@ class OauthService:
             id=account_id,
             chatgpt_account_id=raw_account_id,
             email=email,
+            workspace_id=workspace_id,
+            workspace_label=workspace_label,
+            seat_type=seat_type,
             plan_type=plan_type,
             access_token_encrypted=self._encryptor.encrypt(tokens.access_token),
             refresh_token_encrypted=self._encryptor.encrypt(tokens.refresh_token),

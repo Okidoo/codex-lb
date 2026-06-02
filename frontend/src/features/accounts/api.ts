@@ -4,8 +4,8 @@ import {
   AccountActionResponseSchema,
   AccountAliasRequestSchema,
   AccountAliasResponseSchema,
+  AccountAuthExportResponseSchema,
   AccountExportResponseSchema,
-  AccountOpenCodeAuthExportResponseSchema,
   AccountImportResponseSchema,
   AccountLimitWarmupUpdateRequestSchema,
   AccountLimitWarmupUpdateResponseSchema,
@@ -93,10 +93,10 @@ export function getAccountTrends(accountId: string) {
   );
 }
 
-export function exportAccountOpenCodeAuth(accountId: string) {
+export function exportAccountAuth(accountId: string) {
   return post(
-    `${ACCOUNTS_BASE_PATH}/${encodeURIComponent(accountId)}/export/opencode-auth`,
-    AccountOpenCodeAuthExportResponseSchema,
+    `${ACCOUNTS_BASE_PATH}/${encodeURIComponent(accountId)}/export/auth`,
+    AccountAuthExportResponseSchema,
   );
 }
 
