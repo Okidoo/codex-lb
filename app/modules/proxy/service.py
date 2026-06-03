@@ -895,8 +895,9 @@ class ProxyService:
         forwarded_affinity_kind: str | None = None,
         forwarded_affinity_key: str | None = None,
         rewritten_file_account_id: str | None = None,
+        enforce_openai_sdk_contract: bool = True,
     ) -> AsyncIterator[str]:
-        del suppress_text_done_events
+        del suppress_text_done_events, enforce_openai_sdk_contract
         request_id = ensure_request_id()
         dashboard_settings = await get_settings_cache().get()
         runtime_config = _http_bridge_runtime_config(dashboard_settings, get_settings())
