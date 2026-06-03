@@ -1,5 +1,11 @@
 PYTEST_ARGS := -q -ra -o faulthandler_timeout=300 -o faulthandler_exit_on_timeout=true --timeout=180 --timeout-method=thread --durations=20
 POSTGRES_TEST_DATABASE_URL ?= postgresql+asyncpg://codex_lb:codex_lb@127.0.0.1:5432/codex_lb
+POSTGRES_PYTEST_TARGETS := \
+	tests/integration/test_migrations.py::test_postgresql_migration_contract_policy_and_drift_match \
+	tests/integration/test_migrations.py::test_postgresql_upgrade_head_from_empty_database \
+	tests/integration/test_migrations.py::test_postgresql_startup_migration_auto_remap_legacy_head \
+	tests/integration/test_usage_repository.py::test_latest_by_account_primary_query_plan_uses_normalized_window_index_postgresql \
+	tests/integration/test_repositories.py::test_accounts_upsert_with_merge_disabled_uses_identity_lock_on_postgresql
 SHELL := /bin/bash
 
 .PHONY: help
@@ -61,11 +67,11 @@ test-e2e: frontend-build
 	uv sync --dev --frozen
 	PYTHONFAULTHANDLER=1 uv run pytest $(PYTEST_ARGS) tests/e2e
 
-test-postgres: frontend-build
+test-postgres:
 	uv sync --dev --frozen
 	CODEX_LB_TEST_DATABASE_URL="$(POSTGRES_TEST_DATABASE_URL)" \
 	  PYTHONFAULTHANDLER=1 \
-	  uv run pytest $(PYTEST_ARGS)
+	  uv run pytest $(PYTEST_ARGS) $(POSTGRES_PYTEST_TARGETS)
 
 .PHONY: migration-check migration-check-postgres
 migration-check:
