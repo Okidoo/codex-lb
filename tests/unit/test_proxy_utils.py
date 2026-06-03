@@ -5733,6 +5733,54 @@ async def test_service_stream_responses_preserves_raw_codex_error_after_created(
 
 
 @pytest.mark.asyncio
+async def test_http_bridge_preserves_raw_error_event_when_sdk_contract_disabled():
+    request_logs = _RequestLogsRecorder()
+    service = proxy_service.ProxyService(_repo_factory(request_logs))
+    request_state = proxy_service._WebSocketRequestState(
+        request_id="req_bridge_raw_error",
+        model="gpt-5.4",
+        service_tier=None,
+        reasoning_effort=None,
+        api_key_reservation=None,
+        started_at=0.0,
+        event_queue=asyncio.Queue(),
+        request_text='{"type":"response.create"}',
+        transport="http",
+        enforce_openai_sdk_contract=False,
+    )
+    session = proxy_service._HTTPBridgeSession(
+        key=proxy_service._HTTPBridgeSessionKey("prompt_cache", "bridge-raw-error", None),
+        headers={},
+        affinity=proxy_service._AffinityPolicy(),
+        request_model="gpt-5.4",
+        account=_make_account("acc_bridge_raw_error"),
+        upstream=AsyncMock(),
+        upstream_control=proxy_service._WebSocketUpstreamControl(),
+        pending_requests=deque([request_state]),
+        pending_lock=anyio.Lock(),
+        response_create_gate=asyncio.Semaphore(1),
+        queued_request_count=1,
+        last_used_at=0.0,
+        idle_ttl_seconds=30.0,
+    )
+    raw_payload = {
+        "type": "error",
+        "sequence_number": "error",
+        "error_type": "server_error",
+        "message": "OpenCode stream failed",
+    }
+
+    await service._process_http_bridge_upstream_text(session, json.dumps(raw_payload, separators=(",", ":")))
+
+    event_queue = request_state.event_queue
+    assert event_queue is not None
+    forwarded = await asyncio.wait_for(event_queue.get(), timeout=1.0)
+    assert forwarded is not None
+    assert parse_sse_data_json(forwarded) == raw_payload
+    assert await asyncio.wait_for(event_queue.get(), timeout=1.0) is None
+
+
+@pytest.mark.asyncio
 async def test_service_stream_responses_does_not_infer_previous_response_id_from_session_scope(monkeypatch):
     settings = _make_proxy_settings(log_proxy_service_tier_trace=False)
     request_logs = _RequestLogsRecorder()
@@ -11233,6 +11281,87 @@ async def test_stream_api_key_settlement_outlives_caller_cancel_and_closes_repo(
             "service_tier": "default",
         }
     ]
+    assert settlement.usage_settlement_transferred is True
+
+
+@pytest.mark.asyncio
+async def test_stream_with_retry_skips_release_after_settlement_transfers_on_cancel(monkeypatch):
+    settings = _make_proxy_settings(log_proxy_service_tier_trace=False)
+    request_logs = _RequestLogsRecorder()
+    service = proxy_service.ProxyService(_repo_factory(request_logs))
+    account = _make_account("acc_stream_cancel_transfer")
+    api_key = ApiKeyData(
+        id="key_stream_cancel_transfer",
+        name="stream cancel transfer",
+        key_prefix="sk-transfer",
+        allowed_models=None,
+        enforced_model=None,
+        enforced_reasoning_effort=None,
+        enforced_service_tier=None,
+        expires_at=None,
+        is_active=True,
+        created_at=utcnow(),
+        last_used_at=None,
+    )
+    reservation = proxy_service.ApiKeyUsageReservationData(
+        reservation_id="resv_stream_cancel_transfer",
+        key_id=api_key.id,
+        model="gpt-5.4",
+    )
+
+    monkeypatch.setattr(proxy_service, "get_settings_cache", lambda: _SettingsCache(settings))
+    monkeypatch.setattr(proxy_service, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        service._load_balancer,
+        "select_account",
+        AsyncMock(return_value=AccountSelection(account=account, error_message=None)),
+    )
+    monkeypatch.setattr(service, "_ensure_fresh", AsyncMock(return_value=account))
+
+    async def fake_stream_once(*args: object, **kwargs: object) -> AsyncIterator[str]:
+        del args, kwargs
+        if False:
+            yield ""
+
+    async def fake_settle(
+        api_key_arg: ApiKeyData | None,
+        reservation_arg: proxy_service.ApiKeyUsageReservationData | None,
+        settlement: proxy_service._StreamSettlement,
+        request_id: str,
+    ) -> bool:
+        del api_key_arg, reservation_arg, request_id
+        settlement.usage_settlement_transferred = True
+        raise asyncio.CancelledError
+
+    release_unsettled = AsyncMock()
+    monkeypatch.setattr(service, "_stream_once", fake_stream_once)
+    monkeypatch.setattr(service, "_settle_stream_api_key_usage", fake_settle)
+    monkeypatch.setattr(service, "_release_unsettled_stream_api_key_usage", release_unsettled)
+
+    payload = ResponsesRequest.model_validate(
+        {
+            "model": "gpt-5.4",
+            "instructions": "hi",
+            "input": [],
+            "stream": True,
+        }
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        async for _ in service._stream_with_retry(
+            payload,
+            {"session_id": "sid-stream-cancel-transfer"},
+            codex_session_affinity=False,
+            propagate_http_errors=False,
+            openai_cache_affinity=False,
+            api_key=api_key,
+            api_key_reservation=reservation,
+            suppress_text_done_events=False,
+            request_transport="http",
+        ):
+            pass
+
+    release_unsettled.assert_not_awaited()
 
 
 @pytest.mark.asyncio
