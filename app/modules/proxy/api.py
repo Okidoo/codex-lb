@@ -3298,6 +3298,10 @@ async def _normalize_public_responses_stream(
         if normalized_payload is None:
             continue
         event_type = normalized_payload.get("type")
+        if not enforce_openai_sdk_contract and event_type == "error":
+            terminal_seen = True
+            yield event_block
+            continue
 
         if enforce_openai_sdk_contract and not created_emitted and isinstance(event_type, str):
             if event_type == "response.created":
