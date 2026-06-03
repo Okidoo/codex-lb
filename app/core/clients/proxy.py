@@ -72,7 +72,7 @@ from app.core.types import JsonObject, JsonValue
 from app.core.upstream_proxy import ResolvedUpstreamRoute
 from app.core.utils.json_guards import is_json_mapping
 from app.core.utils.request_id import get_request_id
-from app.core.utils.sse import format_sse_event
+from app.core.utils.sse import format_sse_event, parse_sse_data_json
 
 IGNORE_INBOUND_HEADERS = {
     "authorization",
@@ -1075,6 +1075,19 @@ def _normalize_stream_event_payload(payload: dict[str, JsonValue]) -> dict[str, 
             ),
         )
     return payload
+
+
+def _normalize_stream_payload_for_http_block(event_block: str) -> tuple[str, str | None]:
+    payload = parse_sse_data_json(event_block)
+    if payload is None:
+        return event_block, None
+    normalized = _normalize_stream_event_payload(payload)
+    if normalized is payload:
+        event_type = normalized.get("type")
+        return event_block, event_type if isinstance(event_type, str) else None
+    normalized_type = normalized.get("type")
+    event_type = normalized_type if isinstance(normalized_type, str) else None
+    return format_sse_event(normalized), event_type
 
 
 def _to_websocket_upstream_url(url: str) -> str:
@@ -2285,8 +2298,15 @@ async def _stream_responses_with_session(
                 ):
                     last_stream_activity_at = time.monotonic()
                     event_block = _normalize_sse_event_block(event_block)
+                    event_block, normalized_event_type = _normalize_stream_payload_for_http_block(event_block)
                     event = parse_sse_event(event_block)
-                    if event and event.type in _RESPONSE_STREAM_TERMINAL_EVENT_TYPES:
+                    if event:
+                        if event.type in _RESPONSE_STREAM_TERMINAL_EVENT_TYPES:
+                            seen_terminal = True
+                    elif (
+                        isinstance(normalized_event_type, str)
+                        and normalized_event_type in _RESPONSE_STREAM_TERMINAL_EVENT_TYPES
+                    ):
                         seen_terminal = True
                     archive_text(
                         direction="server_to_codex",
@@ -2361,11 +2381,16 @@ async def _stream_responses_with_session(
             ):
                 last_stream_activity_at = time.monotonic()
                 event_block = _normalize_sse_event_block(event_block)
+                event_block, normalized_event_type = _normalize_stream_payload_for_http_block(event_block)
                 event = parse_sse_event(event_block)
                 if event:
-                    event_type = event.type
-                    if event_type in _RESPONSE_STREAM_TERMINAL_EVENT_TYPES:
+                    if event.type in _RESPONSE_STREAM_TERMINAL_EVENT_TYPES:
                         seen_terminal = True
+                elif (
+                    isinstance(normalized_event_type, str)
+                    and normalized_event_type in _RESPONSE_STREAM_TERMINAL_EVENT_TYPES
+                ):
+                    seen_terminal = True
                 archive_text(
                     direction="server_to_codex",
                     kind="responses",
