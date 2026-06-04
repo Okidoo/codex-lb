@@ -67,6 +67,7 @@ _AUTOMATION_ALWAYS_SKIPPED_ACCOUNT_STATUSES = frozenset(
         AccountStatus.DEACTIVATED,
         AccountStatus.RATE_LIMITED,
         AccountStatus.QUOTA_EXCEEDED,
+        AccountStatus.REAUTH_REQUIRED,
     }
 )
 

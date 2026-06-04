@@ -4,7 +4,9 @@ from datetime import datetime, timedelta
 
 import pytest
 
+from app.db.models import Account, AccountStatus
 from app.modules.automations.service import (
+    AutomationsService,
     AutomationValidationError,
     _normalize_reasoning_effort,
     _pick_dispatch_offsets_seconds,
@@ -162,6 +164,26 @@ def test_scheduled_slot_key_depends_on_due_slot_and_account_only() -> None:
     different_slot = _scheduled_slot_key("job-1", account_id=account_id, due_slot=due_slot + timedelta(days=1))
     assert first == second
     assert first != different_slot
+
+
+def test_is_account_eligible_for_automation_skips_reauth_required() -> None:
+    account = Account(
+        id="acct-reauth",
+        email="reauth@example.com",
+        plan_type="plus",
+        access_token_encrypted=b"access",
+        refresh_token_encrypted=b"refresh",
+        id_token_encrypted=b"id",
+        last_refresh=datetime(2026, 4, 19, 3, 0, 0),
+        status=AccountStatus.REAUTH_REQUIRED,
+    )
+    assert (
+        AutomationsService._is_account_eligible_for_automation(
+            account,
+            include_paused_accounts=False,
+        )
+        is False
+    )
 
 
 def test_pick_dispatch_offsets_seconds_always_includes_zero_anchor() -> None:
