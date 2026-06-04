@@ -622,6 +622,42 @@
         "code",
         "test"
       ]
+    },
+    {
+      "login": "ramhaidar",
+      "name": "ram/haidar",
+      "avatar_url": "https://avatars.githubusercontent.com/u/49301219?v=4",
+      "profile": "https://github.com/ramhaidar",
+      "contributions": [
+        "code"
+      ]
+    },
+    {
+      "login": "Rtx09x",
+      "name": "Rudra Tiwari",
+      "avatar_url": "https://avatars.githubusercontent.com/u/187954595?v=4",
+      "profile": "https://rtx09x.github.io/",
+      "contributions": [
+        "code"
+      ]
+    },
+    {
+      "login": "wuchao05",
+      "name": "Wu Chao",
+      "avatar_url": "https://avatars.githubusercontent.com/u/97175999?v=4",
+      "profile": "https://github.com/wuchao05",
+      "contributions": [
+        "code"
+      ]
+    },
+    {
+      "login": "zwd0313",
+      "name": "zwd0313",
+      "avatar_url": "https://avatars.githubusercontent.com/u/159164983?v=4",
+      "profile": "https://github.com/zwd0313",
+      "contributions": [
+        "code"
+      ]
     }
   ],
   "contributorsPerLine": 7,

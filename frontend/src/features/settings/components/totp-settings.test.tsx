@@ -25,14 +25,20 @@ const LIMIT_WARMUP_DEFAULTS = {
   limitWarmupCooldownSeconds: 3600,
   limitWarmupMinAvailablePercent: 100,
 };
+const ADDITIONAL_QUOTA_DEFAULTS = {
+  additionalQuotaRoutingPolicies: {},
+  additionalQuotaPolicies: [],
+};
 
 const baseSettings = {
   stickyThreadsEnabled: true,
   upstreamStreamTransport: "default" as const,
   preferEarlierResetAccounts: false,
+  preferEarlierResetWindow: "secondary" as const,
   routingStrategy: "usage_weighted" as const,
   relativeAvailabilityPower: 2,
   relativeAvailabilityTopK: 5,
+  singleAccountId: null,
   openaiCacheAffinityMaxAgeSeconds: 300,
   dashboardSessionTtlSeconds: 43200,
   warmupModel: "gpt-5.4-mini",
@@ -41,11 +47,16 @@ const baseSettings = {
   totpConfigured: false,
   apiKeyAuthEnabled: true,
   ...LIMIT_WARMUP_DEFAULTS,
+  ...ADDITIONAL_QUOTA_DEFAULTS,
 };
 
 function renderWithClient(ui: React.ReactElement) {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(<QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>);
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  return render(
+    <QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>,
+  );
 }
 
 describe("TotpSettings", () => {
@@ -64,10 +75,17 @@ describe("TotpSettings", () => {
 
   it("shows setup button when not configured", () => {
     renderWithClient(
-      <TotpSettings settings={baseSettings} onSave={vi.fn().mockResolvedValue(undefined)} />,
+      <TotpSettings
+        settings={baseSettings}
+        onSave={vi.fn().mockResolvedValue(undefined)}
+      />,
     );
-    expect(screen.getByRole("button", { name: "Enable TOTP" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Disable" })).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Enable TOTP" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Disable" }),
+    ).not.toBeInTheDocument();
   });
 
   it("shows disable button when configured", () => {
@@ -78,7 +96,9 @@ describe("TotpSettings", () => {
       />,
     );
     expect(screen.getByRole("button", { name: "Disable" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Enable TOTP" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Enable TOTP" }),
+    ).not.toBeInTheDocument();
   });
 
   it("supports setup flow via dialog", async () => {
@@ -92,31 +112,36 @@ describe("TotpSettings", () => {
     });
     vi.mocked(confirmTotpSetup).mockResolvedValue({ status: "ok" });
 
-    renderWithClient(
-      <TotpSettings settings={baseSettings} onSave={onSave} />,
-    );
+    renderWithClient(<TotpSettings settings={baseSettings} onSave={onSave} />);
 
     await user.click(screen.getByRole("button", { name: "Enable TOTP" }));
 
     // Dialog opens with QR and secret
     expect(await screen.findByText("Secret: SECRET123")).toBeInTheDocument();
-    expect(screen.getByRole("img", { name: "TOTP QR code" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("img", { name: "TOTP QR code" }),
+    ).toBeInTheDocument();
 
     await user.type(screen.getByLabelText("Verification code"), "123456");
     await user.click(screen.getByRole("button", { name: "Confirm setup" }));
-    expect(confirmTotpSetup).toHaveBeenCalledWith({ secret: "SECRET123", code: "123456" });
+    expect(confirmTotpSetup).toHaveBeenCalledWith({
+      secret: "SECRET123",
+      code: "123456",
+    });
   });
 
   it("toggles require-on-login via switch", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn().mockResolvedValue(undefined);
+    const saveSettings: Record<string, unknown> = { ...baseSettings };
+    delete saveSettings.additionalQuotaPolicies;
+    delete saveSettings.totpConfigured;
 
-    renderWithClient(
-      <TotpSettings settings={baseSettings} onSave={onSave} />,
-    );
+    renderWithClient(<TotpSettings settings={baseSettings} onSave={onSave} />);
 
     await user.click(screen.getByRole("switch"));
     expect(onSave).toHaveBeenCalledWith({
+      ...saveSettings,
       totpRequiredOnLogin: true,
     });
   });

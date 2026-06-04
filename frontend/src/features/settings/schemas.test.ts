@@ -12,10 +12,15 @@ describe("DashboardSettingsSchema", () => {
       upstreamStreamTransport: "default",
       preferEarlierResetAccounts: false,
       routingStrategy: "relative_availability",
+      preferEarlierResetWindow: "secondary",
       relativeAvailabilityPower: 2,
       relativeAvailabilityTopK: 5,
+      singleAccountId: "acc-1",
       openaiCacheAffinityMaxAgeSeconds: 300,
       dashboardSessionTtlSeconds: 43200,
+      stickyReallocationBudgetThresholdPct: 95,
+      stickyReallocationPrimaryBudgetThresholdPct: 90,
+      stickyReallocationSecondaryBudgetThresholdPct: 100,
       warmupModel: "gpt-5.4-mini",
       importWithoutOverwrite: true,
       totpRequiredOnLogin: true,
@@ -32,10 +37,14 @@ describe("DashboardSettingsSchema", () => {
     expect(parsed.stickyThreadsEnabled).toBe(true);
     expect(parsed.upstreamStreamTransport).toBe("default");
     expect(parsed.routingStrategy).toBe("relative_availability");
+    expect(parsed.preferEarlierResetWindow).toBe("secondary");
     expect(parsed.relativeAvailabilityPower).toBe(2);
     expect(parsed.relativeAvailabilityTopK).toBe(5);
+    expect(parsed.singleAccountId).toBe("acc-1");
     expect(parsed.openaiCacheAffinityMaxAgeSeconds).toBe(300);
     expect(parsed.dashboardSessionTtlSeconds).toBe(43200);
+    expect(parsed.stickyReallocationPrimaryBudgetThresholdPct).toBe(90);
+    expect(parsed.stickyReallocationSecondaryBudgetThresholdPct).toBe(100);
     expect(parsed.warmupModel).toBe("gpt-5.4-mini");
     expect(parsed.importWithoutOverwrite).toBe(true);
     expect(parsed.apiKeyAuthEnabled).toBe(true);
@@ -49,12 +58,14 @@ describe("DashboardSettingsSchema", () => {
       preferEarlierResetAccounts: false,
       importWithoutOverwrite: false,
       totpRequiredOnLogin: false,
+      stickyReallocationBudgetThresholdPct: 95,
       totpConfigured: false,
       apiKeyAuthEnabled: true,
     });
 
     expect(parsed.upstreamStreamTransport).toBe("default");
     expect(parsed.routingStrategy).toBe("usage_weighted");
+    expect(parsed.singleAccountId).toBeNull();
     expect(parsed.openaiCacheAffinityMaxAgeSeconds).toBe(300);
     expect(parsed.limitWarmupEnabled).toBe(false);
     expect(parsed.limitWarmupWindows).toBe("both");
@@ -62,6 +73,46 @@ describe("DashboardSettingsSchema", () => {
     expect(parsed.limitWarmupPrompt).toBe("Say OK.");
     expect(parsed.limitWarmupCooldownSeconds).toBe(3600);
     expect(parsed.limitWarmupMinAvailablePercent).toBe(100);
+    expect(parsed.stickyReallocationPrimaryBudgetThresholdPct).toBe(95);
+    expect(parsed.stickyReallocationSecondaryBudgetThresholdPct).toBe(95);
+  });
+
+  it("falls back to the legacy sticky threshold during mixed-version rollout", () => {
+    const parsed = DashboardSettingsSchema.parse({
+      stickyThreadsEnabled: true,
+      upstreamStreamTransport: "default",
+      preferEarlierResetAccounts: false,
+      routingStrategy: "round_robin",
+      openaiCacheAffinityMaxAgeSeconds: 300,
+      dashboardSessionTtlSeconds: 43200,
+      stickyReallocationBudgetThresholdPct: 95,
+      importWithoutOverwrite: true,
+      totpRequiredOnLogin: true,
+      totpConfigured: false,
+      apiKeyAuthEnabled: true,
+    });
+
+    expect(parsed.stickyReallocationPrimaryBudgetThresholdPct).toBe(95);
+    expect(parsed.stickyReallocationSecondaryBudgetThresholdPct).toBe(95);
+  });
+
+  it("uses local defaults when mixed-version settings omit sticky thresholds", () => {
+    const parsed = DashboardSettingsSchema.parse({
+      stickyThreadsEnabled: true,
+      upstreamStreamTransport: "default",
+      preferEarlierResetAccounts: false,
+      routingStrategy: "round_robin",
+      openaiCacheAffinityMaxAgeSeconds: 300,
+      dashboardSessionTtlSeconds: 43200,
+      importWithoutOverwrite: true,
+      totpRequiredOnLogin: true,
+      totpConfigured: false,
+      apiKeyAuthEnabled: true,
+    });
+
+    expect(parsed.stickyReallocationBudgetThresholdPct).toBe(95);
+    expect(parsed.stickyReallocationPrimaryBudgetThresholdPct).toBe(95);
+    expect(parsed.stickyReallocationSecondaryBudgetThresholdPct).toBe(100);
   });
 });
 
@@ -72,10 +123,15 @@ describe("SettingsUpdateRequestSchema", () => {
       upstreamStreamTransport: "websocket",
       preferEarlierResetAccounts: true,
       routingStrategy: "relative_availability",
+      preferEarlierResetWindow: "secondary",
       relativeAvailabilityPower: 1.5,
       relativeAvailabilityTopK: 7,
+      singleAccountId: "acc-1",
       openaiCacheAffinityMaxAgeSeconds: 120,
       dashboardSessionTtlSeconds: 7200,
+      stickyReallocationBudgetThresholdPct: 95,
+      stickyReallocationPrimaryBudgetThresholdPct: 90,
+      stickyReallocationSecondaryBudgetThresholdPct: 100,
       warmupModel: " gpt-5.4-nano ",
       importWithoutOverwrite: true,
       totpRequiredOnLogin: true,
@@ -90,12 +146,16 @@ describe("SettingsUpdateRequestSchema", () => {
 
     expect(parsed.openaiCacheAffinityMaxAgeSeconds).toBe(120);
     expect(parsed.dashboardSessionTtlSeconds).toBe(7200);
+    expect(parsed.stickyReallocationPrimaryBudgetThresholdPct).toBe(90);
+    expect(parsed.stickyReallocationSecondaryBudgetThresholdPct).toBe(100);
     expect(parsed.warmupModel).toBe("gpt-5.4-nano");
     expect(parsed.upstreamStreamTransport).toBe("websocket");
+    expect(parsed.preferEarlierResetWindow).toBe("secondary");
     expect(parsed.importWithoutOverwrite).toBe(true);
     expect(parsed.routingStrategy).toBe("relative_availability");
     expect(parsed.relativeAvailabilityPower).toBe(1.5);
     expect(parsed.relativeAvailabilityTopK).toBe(7);
+    expect(parsed.singleAccountId).toBe("acc-1");
     expect(parsed.totpRequiredOnLogin).toBe(true);
     expect(parsed.apiKeyAuthEnabled).toBe(false);
     expect(parsed.limitWarmupEnabled).toBe(true);
@@ -124,6 +184,7 @@ describe("SettingsUpdateRequestSchema", () => {
     expect(parsed.apiKeyAuthEnabled).toBeUndefined();
     expect(parsed.relativeAvailabilityPower).toBeUndefined();
     expect(parsed.relativeAvailabilityTopK).toBeUndefined();
+    expect(parsed.singleAccountId).toBeUndefined();
     expect(parsed.openaiCacheAffinityMaxAgeSeconds).toBeUndefined();
     expect(parsed.dashboardSessionTtlSeconds).toBeUndefined();
     expect(parsed.warmupModel).toBeUndefined();
@@ -133,6 +194,26 @@ describe("SettingsUpdateRequestSchema", () => {
     const result = SettingsUpdateRequestSchema.safeParse({
       stickyThreadsEnabled: "yes",
       preferEarlierResetAccounts: true,
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts fill_first as a valid routing strategy", () => {
+    const parsed = SettingsUpdateRequestSchema.parse({
+      stickyThreadsEnabled: false,
+      preferEarlierResetAccounts: true,
+      routingStrategy: "fill_first",
+    });
+
+    expect(parsed.routingStrategy).toBe("fill_first");
+  });
+
+  it("rejects unknown routing strategies", () => {
+    const result = SettingsUpdateRequestSchema.safeParse({
+      stickyThreadsEnabled: false,
+      preferEarlierResetAccounts: true,
+      routingStrategy: "fill_last",
     });
 
     expect(result.success).toBe(false);

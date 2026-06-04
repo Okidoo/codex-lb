@@ -32,10 +32,12 @@ const EXPECTED_ENDPOINTS = [
 	// accounts
 	"GET /api/accounts",
 	"POST /api/accounts/import",
+	"PATCH /api/accounts/:accountId",
 	"POST /api/accounts/:accountId/pause",
 	"POST /api/accounts/:accountId/reactivate",
 	"PUT /api/accounts/:accountId/alias",
 	"PUT /api/accounts/:accountId/limit-warmup",
+	"PUT /api/accounts/:accountId/routing-policy",
 	"GET /api/accounts/:accountId/trends",
 	"POST /api/accounts/:accountId/export",
 	"POST /api/accounts/:accountId/export/auth",
@@ -62,6 +64,13 @@ const EXPECTED_ENDPOINTS = [
 	"POST /api/sticky-sessions/delete",
 	"POST /api/sticky-sessions/delete-filtered",
 	"POST /api/sticky-sessions/purge",
+	// quota planner
+	"GET /api/quota-planner/settings",
+	"PUT /api/quota-planner/settings",
+	"GET /api/quota-planner/decisions",
+	"GET /api/quota-planner/forecast",
+	"POST /api/quota-planner/warm-now",
+	"POST /api/quota-planner/decisions/:decisionId/cancel",
 	// firewall
 	"GET /api/firewall/ips",
 	"POST /api/firewall/ips",

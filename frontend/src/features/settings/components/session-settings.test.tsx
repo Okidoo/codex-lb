@@ -12,14 +12,20 @@ const LIMIT_WARMUP_DEFAULTS = {
   limitWarmupCooldownSeconds: 3600,
   limitWarmupMinAvailablePercent: 100,
 };
+const ADDITIONAL_QUOTA_DEFAULTS = {
+  additionalQuotaRoutingPolicies: {},
+  additionalQuotaPolicies: [],
+};
 
 const baseSettings = {
   stickyThreadsEnabled: true,
   upstreamStreamTransport: "default" as const,
   preferEarlierResetAccounts: false,
+  preferEarlierResetWindow: "secondary" as const,
   routingStrategy: "usage_weighted" as const,
   relativeAvailabilityPower: 2,
   relativeAvailabilityTopK: 5,
+  singleAccountId: null,
   openaiCacheAffinityMaxAgeSeconds: 300,
   dashboardSessionTtlSeconds: 43200,
   warmupModel: "gpt-5.4-mini",
@@ -28,6 +34,7 @@ const baseSettings = {
   totpConfigured: true,
   apiKeyAuthEnabled: true,
   ...LIMIT_WARMUP_DEFAULTS,
+  ...ADDITIONAL_QUOTA_DEFAULTS,
 };
 
 describe("SessionSettings", () => {
@@ -48,7 +55,22 @@ describe("SessionSettings", () => {
     await user.click(screen.getByRole("button", { name: "Save lifetime" }));
 
     expect(onSave).toHaveBeenCalledWith({
+      stickyThreadsEnabled: true,
+      upstreamStreamTransport: "default",
+      preferEarlierResetAccounts: false,
+      preferEarlierResetWindow: "secondary",
+      routingStrategy: "usage_weighted",
+      relativeAvailabilityPower: 2,
+      relativeAvailabilityTopK: 5,
+      singleAccountId: null,
+      openaiCacheAffinityMaxAgeSeconds: 300,
       dashboardSessionTtlSeconds: 86400,
+      warmupModel: baseSettings.warmupModel,
+      additionalQuotaRoutingPolicies: {},
+      importWithoutOverwrite: false,
+      totpRequiredOnLogin: false,
+      apiKeyAuthEnabled: true,
+      ...LIMIT_WARMUP_DEFAULTS,
     });
   });
 
@@ -98,7 +120,22 @@ describe("SessionSettings", () => {
     await user.click(screen.getByRole("button", { name: "Save lifetime" }));
 
     expect(onSave).toHaveBeenCalledWith({
+      stickyThreadsEnabled: true,
+      upstreamStreamTransport: "default",
+      preferEarlierResetAccounts: false,
+      preferEarlierResetWindow: "secondary",
+      routingStrategy: "usage_weighted",
+      relativeAvailabilityPower: 2,
+      relativeAvailabilityTopK: 5,
+      singleAccountId: null,
+      openaiCacheAffinityMaxAgeSeconds: 300,
       dashboardSessionTtlSeconds: 31536000,
+      warmupModel: baseSettings.warmupModel,
+      additionalQuotaRoutingPolicies: {},
+      importWithoutOverwrite: false,
+      totpRequiredOnLogin: false,
+      apiKeyAuthEnabled: true,
+      ...LIMIT_WARMUP_DEFAULTS,
     });
   });
 });

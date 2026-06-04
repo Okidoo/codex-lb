@@ -48,7 +48,10 @@ from app.modules.accounts.schemas import (
 )
 from app.modules.limit_warmup.repository import LimitWarmupRepository
 from app.modules.proxy.account_cache import get_account_selection_cache
-from app.modules.usage.additional_quota_keys import get_additional_display_label_for_quota_key
+from app.modules.usage.additional_quota_keys import (
+    get_additional_display_label_for_quota_key,
+    get_additional_quota_routing_policy,
+)
 from app.modules.usage.repository import AdditionalUsageRepository, UsageRepository
 from app.modules.usage.updater import AdditionalUsageRepositoryPort, UsageUpdater
 
@@ -115,6 +118,7 @@ class AccountsService:
         additional_quotas_by_account: dict[str, list[AccountAdditionalQuota]] = {}
         additional_usage_repo = cast(AdditionalUsageRepository | None, self._additional_usage_repo)
         if additional_usage_repo:
+            additional_quota_routing_overrides = await self._repo.additional_quota_routing_policy_overrides()
             quota_keys = await additional_usage_repo.list_quota_keys(account_ids=account_ids)
             for quota_key in quota_keys:
                 primary_entries = await additional_usage_repo.latest_by_account(quota_key, "primary")
@@ -132,6 +136,10 @@ class AccountsService:
                             metered_feature=reference_entry.metered_feature,
                             display_label=get_additional_display_label_for_quota_key(quota_key)
                             or reference_entry.limit_name,
+                            routing_policy=get_additional_quota_routing_policy(
+                                quota_key,
+                                overrides=additional_quota_routing_overrides,
+                            ),
                             primary_window=AccountAdditionalWindow(
                                 used_percent=primary_entry.used_percent,
                                 reset_at=primary_entry.reset_at,
@@ -314,8 +322,25 @@ class AccountsService:
             get_account_selection_cache().invalidate()
         return result
 
+    async def update_account(self, account_id: str, *, security_work_authorized: bool | None = None) -> bool:
+        result = False
+        if security_work_authorized is not None:
+            result = await self._repo.update_security_work_authorized(account_id, security_work_authorized)
+        if result:
+            get_account_selection_cache().invalidate()
+        return result
+
     async def set_limit_warmup_enabled(self, account_id: str, enabled: bool) -> bool:
-        return await self._repo.update_limit_warmup_enabled(account_id, enabled)
+        result = await self._repo.update_limit_warmup_enabled(account_id, enabled)
+        if result:
+            get_account_selection_cache().invalidate()
+        return result
+
+    async def set_routing_policy(self, account_id: str, routing_policy: str) -> bool:
+        result = await self._repo.update_routing_policy(account_id, routing_policy)
+        if result:
+            get_account_selection_cache().invalidate()
+        return result
 
     async def delete_account(self, account_id: str, *, delete_history: bool = False) -> bool:
         result = await self._repo.delete(account_id, delete_history=delete_history)

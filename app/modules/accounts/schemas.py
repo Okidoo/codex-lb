@@ -64,6 +64,7 @@ class AccountAdditionalQuota(DashboardModel):
     limit_name: str
     metered_feature: str
     display_label: str | None = None
+    routing_policy: str = Field(default="inherit", pattern=r"^(inherit|normal|burn_first|preserve)$")
     primary_window: AccountAdditionalWindow | None = None
     secondary_window: AccountAdditionalWindow | None = None
 
@@ -77,7 +78,9 @@ class AccountSummary(DashboardModel):
     workspace_label: str | None = None
     seat_type: str | None = None
     plan_type: str
+    routing_policy: str = Field(default="normal", pattern=r"^(normal|burn_first|preserve)$")
     status: str
+    security_work_authorized: bool = False
     usage: AccountUsage | None = None
     reset_at_primary: datetime | None = None
     reset_at_secondary: datetime | None = None
@@ -90,6 +93,9 @@ class AccountSummary(DashboardModel):
     remaining_credits_secondary: float | None = None
     request_usage: AccountRequestUsage | None = None
     additional_quotas: list[AccountAdditionalQuota] = Field(default_factory=list)
+    credits_has: bool | None = None
+    credits_unlimited: bool | None = None
+    credits_balance: float | None = None
     deactivation_reason: str | None = None
     auth: AccountAuthStatus | None = None
     limit_warmup_enabled: bool = False
@@ -143,6 +149,14 @@ class AccountOpenCodeAuthExportResponse(DashboardModel):
     auth_json: OpenCodeAuthJson
 
 
+class AccountUpdateRequest(DashboardModel):
+    security_work_authorized: bool | None = None
+
+
+class AccountUpdateResponse(DashboardModel):
+    status: str
+
+
 class AccountPauseResponse(DashboardModel):
     status: str
 
@@ -158,6 +172,15 @@ class AccountLimitWarmupUpdateRequest(DashboardModel):
 class AccountLimitWarmupUpdateResponse(DashboardModel):
     status: str
     enabled: bool
+
+
+class AccountRoutingPolicyUpdateRequest(DashboardModel):
+    routing_policy: str = Field(pattern=r"^(normal|burn_first|preserve)$")
+
+
+class AccountRoutingPolicyUpdateResponse(DashboardModel):
+    account_id: str
+    routing_policy: str
 
 
 class AccountDeleteResponse(DashboardModel):

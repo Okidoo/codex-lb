@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -22,6 +23,7 @@ from app.db.models import (
     StickySession,
     UsageHistory,
 )
+from app.modules.usage.additional_quota_keys import normalize_additional_quota_routing_policy_overrides
 
 _SETTINGS_ROW_ID = 1
 _DUPLICATE_ACCOUNT_SUFFIX = "__copy"
@@ -216,6 +218,11 @@ class AccountsRepository:
         await self._session.commit()
         await self._session.refresh(account)
         return account
+
+    async def upsert_reauthorized(self, account: Account) -> Account:
+        if account.chatgpt_account_id:
+            return await self.upsert(account, merge_by_email=False, merge_by_chatgpt_identity=True)
+        return await self.upsert_account_slot(account, preserve_unknown_workspace_duplicates=False)
 
     async def upsert_account_slot(
         self,
@@ -417,6 +424,16 @@ class AccountsRepository:
         await self._session.commit()
         return result.scalar_one_or_none() is not None
 
+    async def update_security_work_authorized(self, account_id: str, enabled: bool) -> bool:
+        result = await self._session.execute(
+            update(Account)
+            .where(Account.id == account_id)
+            .values(security_work_authorized=enabled)
+            .returning(Account.id)
+        )
+        await self._session.commit()
+        return result.scalar_one_or_none() is not None
+
     async def update_status_if_current(
         self,
         account_id: str,
@@ -471,6 +488,13 @@ class AccountsRepository:
     async def update_limit_warmup_enabled(self, account_id: str, enabled: bool) -> bool:
         result = await self._session.execute(
             update(Account).where(Account.id == account_id).values(limit_warmup_enabled=enabled).returning(Account.id)
+        )
+        await self._session.commit()
+        return result.scalar_one_or_none() is not None
+
+    async def update_routing_policy(self, account_id: str, routing_policy: str) -> bool:
+        result = await self._session.execute(
+            update(Account).where(Account.id == account_id).values(routing_policy=routing_policy).returning(Account.id)
         )
         await self._session.commit()
         return result.scalar_one_or_none() is not None
@@ -557,6 +581,21 @@ class AccountsRepository:
         if settings is None:
             return True
         return not settings.import_without_overwrite
+
+    async def additional_quota_routing_policy_overrides(self) -> dict[str, str]:
+        settings = await self._session.get(DashboardSettings, _SETTINGS_ROW_ID)
+        if settings is None or not settings.additional_quota_routing_policies_json:
+            return {}
+        try:
+            parsed = json.loads(settings.additional_quota_routing_policies_json)
+        except json.JSONDecodeError:
+            return {}
+        if not isinstance(parsed, dict):
+            return {}
+        string_policies = {
+            key: value for key, value in parsed.items() if isinstance(key, str) and isinstance(value, str)
+        }
+        return normalize_additional_quota_routing_policy_overrides(string_policies)
 
     async def _next_available_account_id(self, base_id: str) -> str:
         candidate = base_id

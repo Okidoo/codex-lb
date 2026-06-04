@@ -4,7 +4,9 @@ import { Settings } from "lucide-react";
 import { AlertMessage } from "@/components/alert-message";
 import { LoadingOverlay } from "@/components/layout/loading-overlay";
 import { ApiKeysSection } from "@/features/api-keys/components/api-keys-section";
+import { useAccounts } from "@/features/accounts/hooks/use-accounts";
 import { FirewallSection } from "@/features/firewall/components/firewall-section";
+import { QuotaPlannerSection } from "@/features/quota-planner/components/quota-planner-section";
 import { buildSettingsUpdateRequest } from "@/features/settings/payload";
 import { AppearanceSettings } from "@/features/settings/components/appearance-settings";
 import { ImportSettings } from "@/features/settings/components/import-settings";
@@ -24,6 +26,7 @@ const TotpSettings = lazy(() =>
 
 export function SettingsPage() {
   const { settingsQuery, updateSettingsMutation } = useSettings();
+  const { accountsQuery } = useAccounts();
   const authMode = useAuthStore((state) => state.authMode);
   const passwordManagementEnabled = useAuthStore((state) => state.passwordManagementEnabled);
   const passwordSessionActive = useAuthStore((state) => state.passwordSessionActive);
@@ -78,6 +81,8 @@ export function SettingsPage() {
                 settings.limitWarmupCooldownSeconds,
               ].join(":")}
               settings={settings}
+              accounts={accountsQuery.data ?? []}
+              accountsLoading={accountsQuery.isLoading}
               busy={busy}
               onSave={handleSave}
             />
@@ -96,10 +101,11 @@ export function SettingsPage() {
               apiKeyAuthEnabled={settings.apiKeyAuthEnabled}
               disabled={busy}
               onApiKeyAuthEnabledChange={(enabled) =>
-                void handleSave(buildSettingsUpdateRequest({ apiKeyAuthEnabled: enabled }))
+                void handleSave(buildSettingsUpdateRequest(settings, { apiKeyAuthEnabled: enabled }))
               }
             />
             <FirewallSection />
+            <QuotaPlannerSection />
             <StickySessionsSection />
           </div>
 

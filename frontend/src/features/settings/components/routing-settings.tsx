@@ -11,8 +11,14 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import type { AccountSummary } from "@/features/accounts/schemas";
 import { buildSettingsUpdateRequest } from "@/features/settings/payload";
-import type { DashboardSettings, SettingsUpdateRequest } from "@/features/settings/schemas";
+import type {
+  AdditionalQuotaRoutingPolicy,
+  DashboardSettings,
+  SettingsUpdateRequest,
+} from "@/features/settings/schemas";
+import { formatCompactAccountId } from "@/utils/account-identifiers";
 
 const WARMUP_MODEL_MAX_LENGTH = 128;
 const LIMIT_WARMUP_MODEL_MAX_LENGTH = 128;
@@ -20,11 +26,25 @@ const LIMIT_WARMUP_PROMPT_MAX_LENGTH = 512;
 
 export type RoutingSettingsProps = {
   settings: DashboardSettings;
+  accounts?: AccountSummary[];
+  accountsLoading?: boolean;
   busy: boolean;
   onSave: (payload: SettingsUpdateRequest) => Promise<void>;
 };
 
-export function RoutingSettings({ settings, busy, onSave }: RoutingSettingsProps) {
+function accountLabel(account: AccountSummary): string {
+  const name = account.alias?.trim() || account.displayName?.trim() || account.email?.trim() || account.accountId;
+  const compactId = formatCompactAccountId(account.accountId, 6, 4);
+  return `${name} (${compactId})`;
+}
+
+export function RoutingSettings({
+  settings,
+  accounts = [],
+  accountsLoading = false,
+  busy,
+  onSave,
+}: RoutingSettingsProps) {
   const [warmupModel, setWarmupModel] = useState(settings.warmupModel);
   const [cacheAffinityTtl, setCacheAffinityTtl] = useState(
     String(settings.openaiCacheAffinityMaxAgeSeconds),
@@ -35,12 +55,41 @@ export function RoutingSettings({ settings, busy, onSave }: RoutingSettingsProps
   const [relativeAvailabilityTopK, setRelativeAvailabilityTopK] = useState(
     String(settings.relativeAvailabilityTopK),
   );
+  const [stickyPrimaryThreshold, setStickyPrimaryThreshold] = useState(
+    String(settings.stickyReallocationPrimaryBudgetThresholdPct ?? 95),
+  );
+  const [stickySecondaryThreshold, setStickySecondaryThreshold] = useState(
+    String(settings.stickyReallocationSecondaryBudgetThresholdPct ?? 100),
+  );
   const [limitWarmupModel, setLimitWarmupModel] = useState(settings.limitWarmupModel);
   const [limitWarmupPrompt, setLimitWarmupPrompt] = useState(settings.limitWarmupPrompt);
   const [limitWarmupCooldown, setLimitWarmupCooldown] = useState(String(settings.limitWarmupCooldownSeconds));
+  const [additionalQuotaKey, setAdditionalQuotaKey] = useState("");
+  const [additionalQuotaPolicy, setAdditionalQuotaPolicy] =
+    useState<AdditionalQuotaRoutingPolicy>("inherit");
 
   const save = (patch: Partial<SettingsUpdateRequest>) =>
-    void onSave(buildSettingsUpdateRequest(patch));
+    void onSave(buildSettingsUpdateRequest(settings, patch));
+  const saveAdditionalQuotaPolicy = (
+    quotaKey: string,
+    policy: AdditionalQuotaRoutingPolicy,
+  ) => {
+    const normalizedKey = quotaKey.trim();
+    if (!normalizedKey) {
+      return;
+    }
+    save({
+      additionalQuotaRoutingPolicies: {
+        ...(settings.additionalQuotaRoutingPolicies ?? {}),
+        [normalizedKey]: policy,
+      },
+    });
+  };
+  const removeAdditionalQuotaPolicy = (quotaKey: string) => {
+    const next = { ...(settings.additionalQuotaRoutingPolicies ?? {}) };
+    delete next[quotaKey];
+    save({ additionalQuotaRoutingPolicies: next });
+  };
 
   const parsedCacheAffinityTtl = Number.parseInt(cacheAffinityTtl, 10);
   const cacheAffinityTtlValid = Number.isInteger(parsedCacheAffinityTtl) && parsedCacheAffinityTtl > 0;
@@ -78,6 +127,41 @@ export function RoutingSettings({ settings, busy, onSave }: RoutingSettingsProps
     relativeAvailabilityTopKValid && parsedRelativeAvailabilityTopK !== settings.relativeAvailabilityTopK;
 
   const relativeAvailabilitySelected = settings.routingStrategy === "relative_availability";
+  const firstAccountId = accounts[0]?.accountId;
+  const additionalQuotaOverrides = settings.additionalQuotaRoutingPolicies ?? {};
+  const knownAdditionalQuotaKeys = new Set((settings.additionalQuotaPolicies ?? []).map((policy) => policy.quotaKey));
+  const additionalQuotaRows = [
+    ...(settings.additionalQuotaPolicies ?? []).map((policy) => ({
+      quotaKey: policy.quotaKey,
+      label: policy.displayLabel || policy.quotaKey,
+      policy: policy.routingPolicy,
+      hasOverride: Object.prototype.hasOwnProperty.call(additionalQuotaOverrides, policy.quotaKey),
+    })),
+    ...Object.entries(additionalQuotaOverrides)
+      .filter(([quotaKey]) => !knownAdditionalQuotaKeys.has(quotaKey))
+      .map(([quotaKey, policy]) => ({
+        quotaKey,
+        label: quotaKey,
+        policy,
+        hasOverride: true,
+      })),
+  ];
+  const parsedStickyPrimaryThreshold = Number.parseFloat(stickyPrimaryThreshold);
+  const stickyPrimaryThresholdValid =
+    Number.isFinite(parsedStickyPrimaryThreshold) &&
+    parsedStickyPrimaryThreshold >= 0 &&
+    parsedStickyPrimaryThreshold <= 100;
+  const stickyPrimaryThresholdChanged =
+    stickyPrimaryThresholdValid &&
+    parsedStickyPrimaryThreshold !== (settings.stickyReallocationPrimaryBudgetThresholdPct ?? 95);
+  const parsedStickySecondaryThreshold = Number.parseFloat(stickySecondaryThreshold);
+  const stickySecondaryThresholdValid =
+    Number.isFinite(parsedStickySecondaryThreshold) &&
+    parsedStickySecondaryThreshold >= 0 &&
+    parsedStickySecondaryThreshold <= 100;
+  const stickySecondaryThresholdChanged =
+    stickySecondaryThresholdValid &&
+    parsedStickySecondaryThreshold !== (settings.stickyReallocationSecondaryBudgetThresholdPct ?? 100);
 
   return (
     <section className="rounded-xl border bg-card p-5">
@@ -158,11 +242,23 @@ export function RoutingSettings({ settings, busy, onSave }: RoutingSettingsProps
             </div>
             <Select
               value={settings.routingStrategy}
-              onValueChange={(value) =>
+              onValueChange={(value) => {
+                const routingStrategy = value as DashboardSettings["routingStrategy"];
+                if (routingStrategy === "single_account") {
+                  const selectedAccountId = settings.singleAccountId ?? firstAccountId;
+                  if (!selectedAccountId) {
+                    return;
+                  }
+                  save({
+                    routingStrategy,
+                    singleAccountId: selectedAccountId,
+                  });
+                  return;
+                }
                 save({
-                  routingStrategy: value as DashboardSettings["routingStrategy"],
-                })
-              }
+                  routingStrategy,
+                });
+              }}
             >
               <SelectTrigger className="h-8 w-48 text-xs" disabled={busy}>
                 <SelectValue />
@@ -170,10 +266,102 @@ export function RoutingSettings({ settings, busy, onSave }: RoutingSettingsProps
               <SelectContent align="end">
                 <SelectItem value="capacity_weighted">Capacity weighted</SelectItem>
                 <SelectItem value="relative_availability">Relative availability</SelectItem>
+                <SelectItem value="fill_first">Fill first</SelectItem>
+                <SelectItem value="sequential_drain">Sequential drain</SelectItem>
+                <SelectItem value="reset_drain">Reset drain</SelectItem>
+                <SelectItem value="single_account" disabled={!settings.singleAccountId && !firstAccountId}>
+                  Single account
+                </SelectItem>
                 <SelectItem value="usage_weighted">Usage weighted</SelectItem>
                 <SelectItem value="round_robin">Round robin</SelectItem>
               </SelectContent>
             </Select>
+          </div>
+
+          <div className="space-y-3 p-3">
+            <div>
+              <p className="text-sm font-medium">Additional quota routing policies</p>
+              <p className="text-xs text-muted-foreground">Override account routing for model-specific quota pools.</p>
+            </div>
+            <div className="space-y-2">
+              {additionalQuotaRows.map(({ quotaKey, label, policy, hasOverride }) => (
+                <div key={quotaKey} className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                  <div className="min-w-0 flex-1 truncate rounded-md border bg-muted/20 px-2 py-1.5 text-xs">
+                    {label}
+                  </div>
+                  <Select
+                    value={policy}
+                    onValueChange={(value) =>
+                      saveAdditionalQuotaPolicy(quotaKey, value as AdditionalQuotaRoutingPolicy)
+                    }
+                  >
+                    <SelectTrigger
+                      className="h-8 w-full text-xs sm:w-36"
+                      disabled={busy}
+                      aria-label={`${quotaKey} routing policy`}
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent align="end">
+                      <SelectItem value="inherit">Inherit</SelectItem>
+                      <SelectItem value="normal">Normal</SelectItem>
+                      <SelectItem value="burn_first">Burn first</SelectItem>
+                      <SelectItem value="preserve">Preserve</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  {hasOverride ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="h-8 text-xs sm:w-20"
+                      disabled={busy}
+                      onClick={() => removeAdditionalQuotaPolicy(quotaKey)}
+                    >
+                      Reset
+                    </Button>
+                  ) : null}
+                </div>
+              ))}
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                <Input
+                  value={additionalQuotaKey}
+                  disabled={busy}
+                  onChange={(event) => setAdditionalQuotaKey(event.target.value)}
+                  className="h-8 text-xs"
+                  aria-label="Additional quota key"
+                  placeholder="Quota key"
+                />
+                <Select
+                  value={additionalQuotaPolicy}
+                  onValueChange={(value) => setAdditionalQuotaPolicy(value as AdditionalQuotaRoutingPolicy)}
+                >
+                  <SelectTrigger
+                    className="h-8 w-full text-xs sm:w-36"
+                    disabled={busy}
+                    aria-label="Additional quota routing policy"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent align="end">
+                    <SelectItem value="inherit">Inherit</SelectItem>
+                    <SelectItem value="normal">Normal</SelectItem>
+                    <SelectItem value="burn_first">Burn first</SelectItem>
+                    <SelectItem value="preserve">Preserve</SelectItem>
+                  </SelectContent>
+                </Select>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-8 text-xs sm:w-24"
+                  disabled={busy || !additionalQuotaKey.trim()}
+                  onClick={() => saveAdditionalQuotaPolicy(additionalQuotaKey, additionalQuotaPolicy)}
+                >
+                  Save policy
+                </Button>
+              </div>
+            </div>
           </div>
 
           {relativeAvailabilitySelected ? (
@@ -255,6 +443,39 @@ export function RoutingSettings({ settings, busy, onSave }: RoutingSettingsProps
             </>
           ) : null}
 
+          {settings.routingStrategy === "single_account" ? (
+            <div className="flex flex-col gap-3 p-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="text-sm font-medium">Selected account</p>
+                <p className="text-xs text-muted-foreground">
+                  Route every eligible request through one account until this setting changes.
+                </p>
+              </div>
+              <Select
+                value={settings.singleAccountId ?? undefined}
+                onValueChange={(value) => save({ singleAccountId: value })}
+              >
+                <SelectTrigger
+                  aria-label="Selected account"
+                  className="h-8 w-full text-xs sm:w-64"
+                  disabled={busy || accountsLoading || accounts.length === 0}
+                >
+                  <SelectValue placeholder={accountsLoading ? "Loading accounts..." : "Choose account"} />
+                </SelectTrigger>
+                <SelectContent align="end">
+                  {accounts.map((account) => (
+                    <SelectItem key={account.accountId} value={account.accountId}>
+                      {accountLabel(account)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {!accountsLoading && accounts.length === 0 ? (
+                <p className="text-xs text-muted-foreground">Import an account before enabling single-account routing.</p>
+              ) : null}
+            </div>
+          ) : null}
+
           <div className="flex items-center justify-between p-3">
             <div>
               <p className="text-sm font-medium">Sticky threads</p>
@@ -268,17 +489,119 @@ export function RoutingSettings({ settings, busy, onSave }: RoutingSettingsProps
             />
           </div>
 
+          <div className="flex flex-col gap-3 p-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="text-sm font-medium">Sticky primary threshold</p>
+              <p className="text-xs text-muted-foreground">Reallocate sticky sessions above this primary usage percent.</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <Input
+                aria-label="Sticky primary threshold"
+                type="number"
+                min={0}
+                max={100}
+                step={0.1}
+                inputMode="decimal"
+                value={stickyPrimaryThreshold}
+                disabled={busy}
+                onChange={(event) => setStickyPrimaryThreshold(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && stickyPrimaryThresholdChanged) {
+                    void save({
+                      stickyReallocationPrimaryBudgetThresholdPct: parsedStickyPrimaryThreshold,
+                    });
+                  }
+                }}
+                className="h-8 w-28 text-xs"
+              />
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="h-8 text-xs"
+                disabled={busy || !stickyPrimaryThresholdChanged}
+                onClick={() =>
+                  void save({
+                    stickyReallocationPrimaryBudgetThresholdPct: parsedStickyPrimaryThreshold,
+                  })
+                }
+              >
+                Save primary
+              </Button>
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-3 p-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="text-sm font-medium">Sticky secondary threshold</p>
+              <p className="text-xs text-muted-foreground">Reallocate sticky sessions above this secondary usage percent.</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <Input
+                aria-label="Sticky secondary threshold"
+                type="number"
+                min={0}
+                max={100}
+                step={0.1}
+                inputMode="decimal"
+                value={stickySecondaryThreshold}
+                disabled={busy}
+                onChange={(event) => setStickySecondaryThreshold(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && stickySecondaryThresholdChanged) {
+                    void save({
+                      stickyReallocationSecondaryBudgetThresholdPct: parsedStickySecondaryThreshold,
+                    });
+                  }
+                }}
+                className="h-8 w-28 text-xs"
+              />
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="h-8 text-xs"
+                disabled={busy || !stickySecondaryThresholdChanged}
+                onClick={() =>
+                  void save({
+                    stickyReallocationSecondaryBudgetThresholdPct: parsedStickySecondaryThreshold,
+                  })
+                }
+              >
+                Save secondary
+              </Button>
+            </div>
+          </div>
+
           <div className="flex items-center justify-between p-3">
             <div>
               <p className="text-sm font-medium">Prefer earlier reset</p>
               <p className="text-xs text-muted-foreground">Bias traffic to accounts with earlier quota reset.</p>
             </div>
-            <Switch
-              aria-label="Prefer earlier reset accounts"
-              checked={settings.preferEarlierResetAccounts}
-              disabled={busy}
-              onCheckedChange={(checked) => save({ preferEarlierResetAccounts: checked })}
-            />
+            <div className="flex items-center gap-3">
+              <Select
+                value={settings.preferEarlierResetWindow}
+                onValueChange={(value) => save({ preferEarlierResetWindow: value as "primary" | "secondary" })}
+              >
+                <SelectTrigger
+                  aria-label="Reset preference window"
+                  className="h-8 w-36 text-xs"
+                  disabled={busy || !settings.preferEarlierResetAccounts}
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent align="end">
+                  <SelectItem value="secondary">Weekly quota</SelectItem>
+                  <SelectItem value="primary">5h quota</SelectItem>
+                </SelectContent>
+              </Select>
+              <Switch
+                aria-label="Prefer earlier reset accounts"
+                checked={settings.preferEarlierResetAccounts}
+                disabled={busy}
+                onCheckedChange={(checked) => save({ preferEarlierResetAccounts: checked })}
+              />
+            </div>
           </div>
 
           <div className="space-y-3 p-3">

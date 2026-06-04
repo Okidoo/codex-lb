@@ -505,6 +505,7 @@ async def test_run_startup_migrations_drops_accounts_email_unique_with_non_casca
             assert "limit_warmup_prompt" in dashboard_columns
             assert "limit_warmup_cooldown_seconds" in dashboard_columns
             assert "limit_warmup_min_available_percent" in dashboard_columns
+            assert "single_account_id" in dashboard_columns
             if "routing_strategy" in dashboard_columns:
                 routing_strategy = (
                     await session.execute(text("SELECT routing_strategy FROM dashboard_settings WHERE id=1"))
@@ -545,12 +546,25 @@ async def test_run_startup_migrations_drops_accounts_email_unique_with_non_casca
             ).scalar_one()
             assert gateway_safe_mode in (False, 0)
             assert "sticky_reallocation_budget_threshold_pct" in dashboard_columns
+            assert "sticky_reallocation_primary_budget_threshold_pct" in dashboard_columns
+            assert "sticky_reallocation_secondary_budget_threshold_pct" in dashboard_columns
             sticky_budget_threshold = (
                 await session.execute(
                     text("SELECT sticky_reallocation_budget_threshold_pct FROM dashboard_settings WHERE id=1")
                 )
             ).scalar_one()
             assert sticky_budget_threshold == 95.0
+            sticky_primary_threshold, sticky_secondary_threshold = (
+                await session.execute(
+                    text(
+                        "SELECT sticky_reallocation_primary_budget_threshold_pct, "
+                        "sticky_reallocation_secondary_budget_threshold_pct "
+                        "FROM dashboard_settings WHERE id=1"
+                    )
+                )
+            ).one()
+            assert sticky_primary_threshold == 95.0
+            assert sticky_secondary_threshold == 95.0
             sticky_columns_rows = (await session.execute(text("PRAGMA table_info(sticky_sessions)"))).fetchall()
             sticky_columns = {str(row[1]) for row in sticky_columns_rows if len(row) > 1}
             assert "kind" in sticky_columns
