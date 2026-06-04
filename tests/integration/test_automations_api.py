@@ -3041,7 +3041,7 @@ async def test_automations_manual_cycle_omits_ineligible_pending_account_without
         representative_run = await service.run_now(job.id, now_utc=now)
 
         executed_first = await service.run_due_jobs(now_utc=now + timedelta(seconds=5))
-        assert executed_first == 1
+        assert executed_first == 0
         quota_updated = await accounts_repository.update_status(accounts[1].id, AccountStatus.QUOTA_EXCEEDED)
         assert quota_updated is True
 
@@ -3120,7 +3120,7 @@ async def test_automations_manual_cycle_reactivates_elapsed_reset_before_delayed
         representative_run = await service.run_now(job.id, now_utc=now)
 
         executed_first = await service.run_due_jobs(now_utc=now + timedelta(seconds=5))
-        assert executed_first == 1
+        assert executed_first == 0
         rate_limited = await accounts_repository.update_status(
             accounts[1].id,
             AccountStatus.RATE_LIMITED,
@@ -3183,7 +3183,7 @@ async def test_automations_manual_cycle_skips_deleted_pending_placeholder(async_
         representative_run = await service.run_now(job.id, now_utc=now)
 
         executed_first = await service.run_due_jobs(now_utc=now + timedelta(seconds=5))
-        assert executed_first == 1
+        assert executed_first == 0
         deleted = await accounts_repository.delete(accounts[1].id)
         assert deleted is True
 
@@ -3360,7 +3360,7 @@ async def test_automations_manual_cycle_all_skipped_placeholders_are_not_reporte
     monkeypatch.setattr("app.modules.automations.service.core_compact_responses", _fake_compact)
     monkeypatch.setattr(
         "app.modules.automations.service._pick_dispatch_offsets_seconds",
-        lambda **_kwargs: [0, 60],
+        lambda **_kwargs: [60, 120],
     )
 
     async with SessionLocal() as session:

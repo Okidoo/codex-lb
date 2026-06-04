@@ -722,8 +722,7 @@ class AutomationsService:
             if representative_claim is None or not has_delayed_dispatches:
                 representative_claim = claim
         if representative_claim is not None:
-            if not has_delayed_dispatches:
-                await self._run_due_manual_runs(now_utc=now, cycle_key=cycle_key)
+            await self._run_due_manual_runs(now_utc=now, cycle_key=cycle_key)
             representative_run = await self._repository.get_run(representative_claim.id)
             if representative_run is None:
                 representative_run = representative_claim
