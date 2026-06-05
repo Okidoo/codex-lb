@@ -21,7 +21,7 @@ export function AccountAliasForm({ account, busy, onSetAlias }: AccountAliasForm
 
   return (
     <form
-      className="rounded-lg border bg-muted/20 p-3"
+      className="rounded-lg border bg-muted/30 p-4"
       onSubmit={(event) => {
         event.preventDefault();
         void onSetAlias(account.accountId, normalized === "" ? null : normalized);
@@ -36,13 +36,14 @@ export function AccountAliasForm({ account, busy, onSetAlias }: AccountAliasForm
       <div className="mt-3 flex flex-col gap-2 sm:flex-row">
         <Input
           id="account-alias"
+          className="h-8 text-xs"
           maxLength={255}
           placeholder="Personal Plus"
           value={alias}
           onChange={(event) => setAlias(event.target.value)}
           disabled={busy}
         />
-        <Button type="submit" size="sm" className="h-9 shrink-0" disabled={busy || !dirty}>
+        <Button type="submit" size="sm" className="h-8 shrink-0 text-xs" disabled={busy || !dirty}>
           Save alias
         </Button>
         {canClear ? (
@@ -50,7 +51,7 @@ export function AccountAliasForm({ account, busy, onSetAlias }: AccountAliasForm
             type="button"
             size="sm"
             variant="outline"
-            className="h-9 shrink-0"
+            className="h-8 shrink-0 text-xs"
             disabled={busy}
             onClick={() => {
               setAlias("");
