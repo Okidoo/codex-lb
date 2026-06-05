@@ -8305,10 +8305,10 @@ async def test_connect_proxy_websocket_fails_over_after_refresh_transport_error(
     )
     monkeypatch.setattr(
         service,
-        "_ensure_fresh",
+        "_ensure_fresh_with_budget",
         AsyncMock(side_effect=[asyncio.TimeoutError(), second_account]),
     )
-    monkeypatch.setattr(proxy_service, "connect_responses_websocket", AsyncMock(return_value=upstream))
+    monkeypatch.setattr(service, "_open_upstream_websocket_with_budget", AsyncMock(return_value=upstream))
     monkeypatch.setattr(service._load_balancer, "record_error", record_error)
     monkeypatch.setattr(service, "_release_websocket_reservation", release_reservation)
 
@@ -8364,10 +8364,10 @@ async def test_connect_proxy_websocket_fails_over_after_upstream_connect_timeout
             ]
         ),
     )
-    monkeypatch.setattr(service, "_ensure_fresh", AsyncMock(side_effect=[first_account, second_account]))
+    monkeypatch.setattr(service, "_ensure_fresh_with_budget", AsyncMock(side_effect=[first_account, second_account]))
     monkeypatch.setattr(
-        proxy_service,
-        "connect_responses_websocket",
+        service,
+        "_open_upstream_websocket_with_budget",
         AsyncMock(side_effect=[asyncio.TimeoutError(), upstream]),
     )
     monkeypatch.setattr(service._load_balancer, "record_error", record_error)
