@@ -18,9 +18,11 @@ SERVICE_PATH = PROXY_DIR / "service.py"
 _SERVICE_DIR = PROXY_DIR / "_service"
 SERVICE_PACKAGE_DIR = PROXY_DIR / "_service"
 HTTP_BRIDGE_MIXIN_PATH = PROXY_DIR / "_service" / "http_bridge" / "mixin.py"
+STREAMING_MIXIN_PATH = PROXY_DIR / "_service" / "streaming" / "mixin.py"
 
 MAX_SERVICE_LINES = 2_600
 MAX_HTTP_BRIDGE_MIXIN_LINES = 2_400
+MAX_STREAMING_MIXIN_LINES = 1_100
 MAX_PROXY_SERVICE_METHOD_LINES = 1_200
 
 REQUIRED_SERVICE_PACKAGES = {
@@ -133,6 +135,12 @@ def _check_http_bridge_mixin_line_count() -> None:
         raise AssertionError(f"http_bridge/mixin.py has {count} lines; limit is {MAX_HTTP_BRIDGE_MIXIN_LINES}")
 
 
+def _check_streaming_mixin_line_count() -> None:
+    count = _line_count(STREAMING_MIXIN_PATH)
+    if count > MAX_STREAMING_MIXIN_LINES:
+        raise AssertionError(f"streaming/mixin.py has {count} lines; limit is {MAX_STREAMING_MIXIN_LINES}")
+
+
 def _check_proxy_service_method_size(module: ast.Module) -> None:
     methods = _proxy_service_methods(module)
     largest = max((method.end_lineno or method.lineno) - method.lineno + 1 for method in methods)
@@ -193,6 +201,7 @@ def main() -> int:
         service_module = _parse(SERVICE_PATH)
         _check_service_line_count()
         _check_http_bridge_mixin_line_count()
+        _check_streaming_mixin_line_count()
         _check_proxy_service_method_size(service_module)
         _check_service_facade_surface(service_module)
         _check_service_does_not_import_shims(service_module)
