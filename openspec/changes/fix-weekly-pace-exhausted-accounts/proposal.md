@@ -14,8 +14,8 @@ is over the planned burn for this point in the week.
 
 - Count fresh weekly usage rows from `rate_limited` and `quota_exceeded`
   accounts in weekly pace totals and forecasts.
-- Continue excluding paused, deactivated, missing, and stale accounts from the
-  pace pool.
+- Continue excluding reauth-required, paused, deactivated, missing, and stale
+  accounts from the pace pool.
 - Label positive schedule gaps as over planned usage instead of "behind
   schedule".
 - Cover a fresh `quota_exceeded` account at 100% weekly usage in the dashboard

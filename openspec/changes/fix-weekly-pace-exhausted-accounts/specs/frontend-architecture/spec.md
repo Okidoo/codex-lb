@@ -9,9 +9,9 @@ The dashboard SHALL show weekly quota pace when account weekly capacity credits,
 - **WHEN** multiple accounts have weekly quota data with different `resetAtSecondary` values
 - **THEN** the system computes each account's expected remaining weekly credits from that account's own reset time and window length before summing totals
 
-#### Scenario: Weekly credits pace excludes hard-inactive or stale usage rows
+#### Scenario: Weekly credits pace excludes hard-blocked or stale usage rows
 
-- **WHEN** an account is paused, deactivated, missing from the account table, or its latest weekly usage sample is older than the freshness window derived from the usage refresh interval
+- **WHEN** an account is `reauth_required`, paused, deactivated, missing from the account table, or its latest weekly usage sample is older than the freshness window derived from the usage refresh interval
 - **THEN** the account is not included in weekly pace totals or forecasts
 - **AND** the response reports the excluded stale account count separately from the included account count
 
@@ -46,5 +46,5 @@ The dashboard SHALL show weekly quota pace when account weekly capacity credits,
 
 #### Scenario: No valid weekly credit data hides pace
 
-- **WHEN** no account has complete, fresh, non-paused, non-deactivated weekly credits pace data
+- **WHEN** no account has complete, fresh weekly credits pace data for an `active`, `rate_limited`, or `quota_exceeded` account
 - **THEN** the dashboard does not render a fake weekly pace value
