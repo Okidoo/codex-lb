@@ -85,7 +85,7 @@ def build_weekly_credit_pace(
             continue
 
         account = accounts_by_id.get(summary.account_id)
-        if account is None or account.status != AccountStatus.ACTIVE:
+        if account is None or account.status in (AccountStatus.DEACTIVATED, AccountStatus.PAUSED):
             inactive_account_count += 1
             continue
 
