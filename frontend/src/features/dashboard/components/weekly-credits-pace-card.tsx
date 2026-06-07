@@ -29,7 +29,7 @@ function formatProAccountEquivalent(value: number): string {
 
 function statusLabel(pace: WeeklyCreditPace): string {
   if (pace.status === "on_track") return "On pace";
-  const direction = pace.deltaPercent > 0 ? "above schedule" : "below schedule";
+  const direction = pace.deltaPercent > 0 ? "over planned usage" : "below planned usage";
   if (pace.paceMultiplier != null && pace.paceMultiplier > 0) {
     return `${pace.paceMultiplier.toFixed(2)}x recent/scheduled`;
   }
@@ -38,10 +38,10 @@ function statusLabel(pace: WeeklyCreditPace): string {
 
 function scheduleGapLine(pace: WeeklyCreditPace): string {
   if (pace.scheduleGapCredits > 0) {
-    return `${formatCompactNumber(pace.scheduleGapCredits)} credits behind schedule now`;
+    return `${formatCompactNumber(pace.scheduleGapCredits)} credits over planned usage now`;
   }
   if (pace.deltaPercent < 0) {
-    return `${formatSignedPercent(pace.deltaPercent)} ahead of schedule now`;
+    return `${formatSignedPercent(pace.deltaPercent)} below planned usage now`;
   }
   return "On the current linear weekly schedule";
 }

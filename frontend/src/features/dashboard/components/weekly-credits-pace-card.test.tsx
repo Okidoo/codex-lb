@@ -50,7 +50,7 @@ describe("WeeklyCreditsPaceCard", () => {
     expect(screen.getByText("Reduce ongoing weekly-credit load by ~72%")).toBeInTheDocument();
     expect(screen.getByText("Add capacity")).toBeInTheDocument();
     expect(screen.getByText("7.1x Pro weekly pool (~8 accounts)")).toBeInTheDocument();
-    expect(screen.getByText("360K credits behind schedule now")).toBeInTheDocument();
+    expect(screen.getByText("360K credits over planned usage now")).toBeInTheDocument();
     expect(screen.getByText("360K credits projected short before reset")).toBeInTheDocument();
     expect(screen.queryByText("500K")).not.toBeInTheDocument();
     expect(screen.getByText("Schedule marker")).toBeInTheDocument();
@@ -80,7 +80,7 @@ describe("WeeklyCreditsPaceCard", () => {
 
     expect(screen.queryByText("Recovery options")).not.toBeInTheDocument();
     expect(screen.queryByText("No pause needed")).not.toBeInTheDocument();
-    expect(screen.getByText("8% below schedule")).toBeInTheDocument();
+    expect(screen.getByText("8% below planned usage")).toBeInTheDocument();
     expect(screen.queryByText("80K credits projected low-water mark")).not.toBeInTheDocument();
   });
 
@@ -121,7 +121,7 @@ describe("WeeklyCreditsPaceCard", () => {
 
     expect(screen.queryByText("Pause")).not.toBeInTheDocument();
     expect(screen.queryByText("Throttle")).not.toBeInTheDocument();
-    expect(screen.getByText("3.1K credits behind schedule now")).toBeInTheDocument();
+    expect(screen.getByText("3.1K credits over planned usage now")).toBeInTheDocument();
     expect(screen.getByText("No weekly shortfall projected at recent pace")).toBeInTheDocument();
   });
 

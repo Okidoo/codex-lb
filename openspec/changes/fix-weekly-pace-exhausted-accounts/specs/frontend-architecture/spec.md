@@ -27,6 +27,7 @@ The dashboard SHALL show weekly quota pace when account weekly capacity credits,
 - **THEN** the response reports `scheduleGapCredits` for the current deficit against the linear schedule
 - **AND** the response reports `projectedShortfallCredits` only for a future shortfall forecast based on recent burn
 - **AND** the dashboard labels the two concepts separately
+- **AND** the dashboard describes the current deficit as over planned usage, fewer credits remaining than scheduled, or equivalent over-consumption wording rather than "behind schedule"
 
 #### Scenario: Forecast burn uses recent weekly usage slope
 
