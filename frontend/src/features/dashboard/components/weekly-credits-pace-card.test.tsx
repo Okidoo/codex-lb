@@ -121,8 +121,8 @@ describe("WeeklyCreditsPaceCard", () => {
     );
 
     expect(screen.getByText("Recommendations")).toBeInTheDocument();
-    expect(screen.getByText("Pause")).toBeInTheDocument();
-    expect(screen.getByText("3h to return to schedule")).toBeInTheDocument();
+    expect(screen.queryByText("Pause")).not.toBeInTheDocument();
+    expect(screen.queryByText("3h to return to schedule")).not.toBeInTheDocument();
     expect(screen.queryByText("Throttle")).not.toBeInTheDocument();
     expect(screen.getByText("Add capacity")).toBeInTheDocument();
     expect(screen.getByText("0.061x Pro weekly pool (~1 account)")).toBeInTheDocument();

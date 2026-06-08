@@ -73,12 +73,9 @@ function formatDurationHours(hours: number): string {
   return `${minutesPart}m`;
 }
 
-function breakEvenLine(pace: WeeklyCreditPace): string {
+function breakEvenLine(pace: WeeklyCreditPace): string | null {
   if (pace.projectedShortfallCredits <= 0) {
-    if (pace.scheduleGapCredits > 0 && pace.scheduledBurnRateCreditsPerHour > 0) {
-      return `${formatDurationHours(pace.scheduleGapCredits / pace.scheduledBurnRateCreditsPerHour)} to return to schedule`;
-    }
-    return "No pause needed";
+    return null;
   }
   if (pace.pauseForBreakEvenHours == null) {
     return "Until reset";
@@ -126,8 +123,13 @@ export function WeeklyCreditsPaceCard({ pace }: WeeklyCreditsPaceCardProps) {
     pace.status === "danger" ? "bg-red-500" : pace.status === "ahead" ? "bg-amber-500" : "bg-primary";
   const throttle = throttleLine(pace);
   const proAccounts = proAccountsLine(pace);
+  const breakEven = breakEvenLine(pace);
   const showRecommendations =
-    pace.scheduleGapCredits > 0 || pace.projectedShortfallCredits > 0 || Boolean(throttle) || Boolean(proAccounts);
+    pace.scheduleGapCredits > 0 ||
+    pace.projectedShortfallCredits > 0 ||
+    Boolean(breakEven) ||
+    Boolean(throttle) ||
+    Boolean(proAccounts);
 
   return (
     <section className="rounded-xl border bg-card p-5" aria-label="Weekly credits pace">
@@ -183,10 +185,12 @@ export function WeeklyCreditsPaceCard({ pace }: WeeklyCreditsPaceCardProps) {
           <div className="rounded-lg border bg-background/60 px-3 py-2 text-xs">
             <p className="font-medium">Recommendations</p>
             <div className="mt-2 grid gap-1.5">
-              <div className="flex items-baseline justify-between gap-3">
-                <span className="shrink-0 text-muted-foreground">Pause</span>
-                <span className="min-w-0 text-right tabular-nums">{breakEvenLine(pace)}</span>
-              </div>
+              {breakEven ? (
+                <div className="flex items-baseline justify-between gap-3">
+                  <span className="shrink-0 text-muted-foreground">Pause</span>
+                  <span className="min-w-0 text-right tabular-nums">{breakEven}</span>
+                </div>
+              ) : null}
               {throttle ? (
                 <div className="flex items-baseline justify-between gap-3">
                   <span className="shrink-0 text-muted-foreground">Throttle</span>
