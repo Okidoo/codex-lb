@@ -12449,6 +12449,82 @@ async def test_process_upstream_websocket_text_replays_owner_pinned_usage_limit_
 
 
 @pytest.mark.asyncio
+async def test_process_upstream_websocket_text_keeps_owner_pin_for_file_full_resend(
+    monkeypatch,
+):
+    request_logs = _RequestLogsRecorder()
+    service = proxy_service.ProxyService(_repo_factory(request_logs))
+    finalize_request_state = AsyncMock()
+    handle_stream_error = AsyncMock()
+    account = _make_account("acc_ws_prev_quota_owner_file")
+
+    monkeypatch.setattr(service, "_finalize_websocket_request_state", finalize_request_state)
+    monkeypatch.setattr(service, "_handle_stream_error", handle_stream_error)
+
+    fresh_payload = {
+        "type": "response.create",
+        "model": "gpt-5.1",
+        "instructions": "",
+        "input": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "continue"},
+                    {"type": "input_file", "file_id": "file_pinned"},
+                ],
+            }
+        ],
+    }
+    request_payload = {**fresh_payload, "previous_response_id": "resp_anchor"}
+    pending_request = proxy_service._WebSocketRequestState(
+        request_id="ws_req_prev_quota_file_no_replay",
+        model="gpt-5.1",
+        service_tier=None,
+        reasoning_effort=None,
+        api_key_reservation=None,
+        started_at=0.0,
+        awaiting_response_created=True,
+        request_text=json.dumps(request_payload, separators=(",", ":")),
+        previous_response_id="resp_anchor",
+        preferred_account_id=account.id,
+        fresh_upstream_request_text=json.dumps(fresh_payload, separators=(",", ":")),
+        fresh_upstream_request_is_retry_safe=True,
+    )
+    pending_requests = deque([pending_request])
+    upstream_control = proxy_service._WebSocketUpstreamControl()
+    upstream_payload = {
+        "type": "error",
+        "status": 429,
+        "error": {
+            "type": "invalid_request_error",
+            "code": "usage_limit_reached",
+            "message": "The usage limit has been reached",
+        },
+    }
+
+    downstream_text = await service._process_upstream_websocket_text(
+        json.dumps(upstream_payload, separators=(",", ":")),
+        account=account,
+        account_id_value=account.id,
+        pending_requests=pending_requests,
+        pending_lock=anyio.Lock(),
+        api_key=None,
+        upstream_control=upstream_control,
+        response_create_gate=asyncio.Semaphore(1),
+    )
+
+    assert '"code":"upstream_unavailable"' in downstream_text
+    handle_stream_error.assert_awaited_once()
+    finalize_request_state.assert_awaited_once()
+    assert upstream_control.reconnect_requested is False
+    assert upstream_control.suppress_downstream_event is False
+    assert upstream_control.replay_request_state is None
+    assert pending_request.previous_response_id == "resp_anchor"
+    assert pending_request.preferred_account_id == account.id
+    assert pending_request.replay_count == 0
+
+
+@pytest.mark.asyncio
 async def test_proxy_responses_websocket_transparent_replay_preserves_sticky_thread_affinity(
     monkeypatch,
 ):

@@ -50,6 +50,7 @@ from app.core.openai.models import OpenAIEvent
 from app.core.openai.parsing import parse_sse_event
 from app.core.openai.requests import (
     ResponsesRequest,
+    extract_input_file_ids,
 )
 from app.core.types import JsonValue
 from app.core.utils.sse import CODEX_KEEPALIVE_FRAME as CODEX_KEEPALIVE_FRAME  # noqa: F401
@@ -655,7 +656,18 @@ def _websocket_owner_unavailable_request_can_replay_fresh(request_state: _WebSoc
         return False
     if request_state.response_event_count > 0:
         return False
-    return bool(request_state.fresh_upstream_request_is_retry_safe and request_state.fresh_upstream_request_text)
+    if not (request_state.fresh_upstream_request_is_retry_safe and request_state.fresh_upstream_request_text):
+        return False
+    try:
+        fresh_payload = json.loads(request_state.fresh_upstream_request_text)
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(fresh_payload, dict):
+        return False
+    input_value = fresh_payload.get("input")
+    if input_value is not None and extract_input_file_ids(cast(JsonValue, input_value)):
+        return False
+    return True
 
 
 def _prepare_websocket_request_state_for_owner_unavailable_replay(

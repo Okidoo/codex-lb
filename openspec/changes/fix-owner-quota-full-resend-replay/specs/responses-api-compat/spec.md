@@ -26,10 +26,12 @@ The proxy SHALL replay a Codex-native direct Responses WebSocket request pinned 
   failure
 - **AND** it does not replay the anchor-only continuation on another account
 
-#### Scenario: file-pinned owner quota failures do not migrate
+#### Scenario: file-bearing full-resend owner quota failures do not migrate
 
-- **GIVEN** a direct Responses WebSocket request is pinned to an owner account by
-  a live file-id routing requirement
+- **GIVEN** a direct Responses WebSocket request includes `previous_response_id`
+  for `account_a`
+- **AND** the proxy has captured a retry-safe fresh full-resend body
+- **AND** that fresh body contains an `input_file.file_id` reference
 - **WHEN** that owner returns an account-recovery quota failure
 - **THEN** the proxy preserves the file-owner routing contract
 - **AND** it does not replay the request on another account
