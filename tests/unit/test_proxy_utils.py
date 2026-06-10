@@ -8442,6 +8442,85 @@ async def test_connect_proxy_websocket_previous_response_owner_usage_limit_fails
 
 
 @pytest.mark.asyncio
+async def test_connect_proxy_websocket_previous_response_owner_usage_limit_replays_safe_full_resend(monkeypatch):
+    request_logs = _RequestLogsRecorder()
+    service = proxy_service.ProxyService(_repo_factory(request_logs))
+    account_owner = _make_account("acc_ws_prev_owner_replay")
+    account_other = _make_account("acc_ws_other_replay")
+    upstream = SimpleNamespace()
+    seen_excluded_account_ids: list[set[str]] = []
+
+    async def select_account(deadline: float, **kwargs: object) -> AccountSelection:
+        del deadline
+        excluded_account_ids = kwargs.get("exclude_account_ids")
+        seen_excluded_account_ids.append(set(cast(set[str], excluded_account_ids)))
+        if len(seen_excluded_account_ids) == 1:
+            return AccountSelection(account=account_owner, error_message=None)
+        return AccountSelection(account=account_other, error_message=None)
+
+    mark_rate_limit = AsyncMock()
+    first_handshake_error = proxy_module.ProxyResponseError(
+        429,
+        openai_error("usage_limit_reached", "usage limit reached"),
+    )
+    fresh_payload = {
+        "type": "response.create",
+        "model": "gpt-5.1",
+        "input": [{"role": "user", "content": [{"type": "input_text", "text": "continue"}]}],
+    }
+
+    monkeypatch.setattr(service, "_select_account_with_budget", select_account)
+    monkeypatch.setattr(service._load_balancer, "mark_rate_limit", mark_rate_limit)
+    monkeypatch.setattr(service, "_ensure_fresh", AsyncMock(side_effect=[account_owner, account_other]))
+    monkeypatch.setattr(service, "_open_upstream_websocket", AsyncMock(side_effect=[first_handshake_error, upstream]))
+    monkeypatch.setattr(service, "_release_websocket_reservation", AsyncMock())
+
+    request_state = proxy_service._WebSocketRequestState(
+        request_id="ws_req_prev_owner_handshake_429_replay",
+        model="gpt-5.1",
+        service_tier=None,
+        reasoning_effort=None,
+        api_key_reservation=None,
+        started_at=0.0,
+        previous_response_id="resp_prev_anchor",
+        preferred_account_id=account_owner.id,
+        request_text=json.dumps(
+            {**fresh_payload, "previous_response_id": "resp_prev_anchor"},
+            separators=(",", ":"),
+        ),
+        fresh_upstream_request_text=json.dumps(fresh_payload, separators=(",", ":")),
+        fresh_upstream_request_is_retry_safe=True,
+    )
+
+    websocket_send = AsyncMock()
+    websocket = cast(WebSocket, SimpleNamespace(send_text=websocket_send))
+    selected_account, selected_upstream = await service._connect_proxy_websocket(
+        {},
+        sticky_key=None,
+        sticky_kind=None,
+        prefer_earlier_reset=False,
+        prefer_earlier_reset_window="secondary",
+        routing_strategy="usage_weighted",
+        model="gpt-5.1",
+        request_state=request_state,
+        api_key=None,
+        client_send_lock=anyio.Lock(),
+        websocket=websocket,
+    )
+
+    assert selected_account == account_other
+    assert selected_upstream is upstream
+    assert seen_excluded_account_ids == [set(), {account_owner.id}]
+    mark_rate_limit.assert_awaited_once()
+    assert request_state.previous_response_id is None
+    assert request_state.preferred_account_id is None
+    assert request_state.replay_count == 1
+    assert "previous_response_id" not in cast(str, request_state.request_text)
+    websocket_send.assert_not_awaited()
+    assert request_logs.calls == []
+
+
+@pytest.mark.asyncio
 async def test_connect_proxy_websocket_surfaces_local_connect_overload_without_penalizing_account(monkeypatch):
     settings = _make_proxy_settings(log_proxy_service_tier_trace=False)
     settings.proxy_upstream_websocket_connect_limit = 1
@@ -12291,6 +12370,81 @@ async def test_process_upstream_websocket_text_maps_previous_response_usage_limi
     assert upstream_control.suppress_downstream_event is False
     assert upstream_control.replay_request_state is None
     assert pending_request.replay_count == 0
+    assert list(pending_requests) == []
+
+
+@pytest.mark.asyncio
+async def test_process_upstream_websocket_text_replays_owner_pinned_usage_limit_when_retry_safe(
+    monkeypatch,
+):
+    request_logs = _RequestLogsRecorder()
+    service = proxy_service.ProxyService(_repo_factory(request_logs))
+    finalize_request_state = AsyncMock()
+    handle_stream_error = AsyncMock()
+    account = _make_account("acc_ws_prev_quota_owner_replay")
+
+    monkeypatch.setattr(service, "_finalize_websocket_request_state", finalize_request_state)
+    monkeypatch.setattr(service, "_handle_stream_error", handle_stream_error)
+
+    fresh_payload = {
+        "type": "response.create",
+        "model": "gpt-5.1",
+        "instructions": "",
+        "input": [{"role": "user", "content": [{"type": "input_text", "text": "continue"}]}],
+    }
+    request_payload = {**fresh_payload, "previous_response_id": "resp_anchor"}
+    pending_request = proxy_service._WebSocketRequestState(
+        request_id="ws_req_prev_quota_replay",
+        model="gpt-5.1",
+        service_tier=None,
+        reasoning_effort=None,
+        api_key_reservation=None,
+        started_at=0.0,
+        awaiting_response_created=True,
+        request_text=json.dumps(request_payload, separators=(",", ":")),
+        previous_response_id="resp_anchor",
+        preferred_account_id=account.id,
+        fresh_upstream_request_text=json.dumps(fresh_payload, separators=(",", ":")),
+        fresh_upstream_request_is_retry_safe=True,
+    )
+    pending_requests = deque([pending_request])
+    upstream_control = proxy_service._WebSocketUpstreamControl()
+    upstream_payload = {
+        "type": "error",
+        "status": 429,
+        "error": {
+            "type": "invalid_request_error",
+            "code": "usage_limit_reached",
+            "message": "The usage limit has been reached",
+        },
+    }
+    upstream_text = json.dumps(upstream_payload, separators=(",", ":"))
+
+    downstream_text = await service._process_upstream_websocket_text(
+        upstream_text,
+        account=account,
+        account_id_value=account.id,
+        pending_requests=pending_requests,
+        pending_lock=anyio.Lock(),
+        api_key=None,
+        upstream_control=upstream_control,
+        response_create_gate=asyncio.Semaphore(1),
+    )
+
+    assert downstream_text == upstream_text
+    handle_stream_error.assert_awaited_once()
+    handle_call = handle_stream_error.await_args
+    assert handle_call is not None
+    assert handle_call.args[0] == account
+    assert handle_call.args[2] == "usage_limit_reached"
+    finalize_request_state.assert_not_awaited()
+    assert upstream_control.reconnect_requested is True
+    assert upstream_control.suppress_downstream_event is True
+    assert upstream_control.replay_request_state is pending_request
+    assert pending_request.previous_response_id is None
+    assert pending_request.preferred_account_id is None
+    assert pending_request.replay_count == 1
+    assert "previous_response_id" not in cast(str, pending_request.request_text)
     assert list(pending_requests) == []
 
 

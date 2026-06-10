@@ -644,6 +644,42 @@ def _websocket_auth_request_can_switch_account(request_state: _WebSocketRequestS
     )
 
 
+def _websocket_owner_unavailable_request_can_replay_fresh(request_state: _WebSocketRequestState) -> bool:
+    if request_state.previous_response_id is None or request_state.preferred_account_id is None:
+        return False
+    if request_state.file_required_preferred_account:
+        return False
+    if request_state.replay_count > 0:
+        return False
+    if request_state.response_id is not None:
+        return False
+    if request_state.response_event_count > 0:
+        return False
+    return bool(request_state.fresh_upstream_request_is_retry_safe and request_state.fresh_upstream_request_text)
+
+
+def _prepare_websocket_request_state_for_owner_unavailable_replay(
+    request_state: _WebSocketRequestState,
+) -> str | None:
+    if not _websocket_owner_unavailable_request_can_replay_fresh(request_state):
+        return None
+    request_state.request_text = request_state.fresh_upstream_request_text
+    request_state.previous_response_id = None
+    request_state.preferred_account_id = None
+    request_state.proxy_injected_previous_response_id = False
+    request_state.fresh_upstream_request_is_retry_safe = False
+    request_text = request_state.request_text
+    if not isinstance(request_text, str):
+        return None
+    request_state.replay_count += 1
+    request_state.awaiting_response_created = True
+    request_state.response_id = None
+    request_state.response_event_count = 0
+    _clear_websocket_request_error_overrides(request_state)
+    _refresh_websocket_request_input_fingerprint_from_text(request_state)
+    return request_text
+
+
 def _prepare_websocket_request_state_for_auth_replay(
     request_state: _WebSocketRequestState,
 ) -> str | None:

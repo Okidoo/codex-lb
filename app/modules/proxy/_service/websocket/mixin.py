@@ -358,6 +358,7 @@ from app.modules.proxy._service.websocket.helpers import (
     _pop_replayable_precreated_websocket_request_state,
     _pop_terminal_websocket_request_state,
     _prepare_websocket_request_state_for_auth_replay,
+    _prepare_websocket_request_state_for_owner_unavailable_replay,
     _record_websocket_continuity_completion,
     _release_websocket_response_create_gate,
     _rewrite_websocket_continuity_corruption_event,
@@ -382,6 +383,7 @@ from app.modules.proxy._service.websocket.helpers import (
     _websocket_event_error_param,
     _websocket_event_error_type,
     _websocket_full_resend_conflicts_with_visible_pending,
+    _websocket_owner_unavailable_request_can_replay_fresh,
     _websocket_precreated_auth_error_code,
     _websocket_precreated_retry_error_code,
     _websocket_receive_timeout_for_pending_requests,
@@ -1382,8 +1384,11 @@ class _WebSocketMixin:
             is_retry = attempt > 0
             forced_refresh_account_id = request_state.force_refresh_account_id
             preferred_account_id = forced_refresh_account_id or request_state.preferred_account_id
+            can_replay_owner_unavailable = _websocket_owner_unavailable_request_can_replay_fresh(request_state)
             require_preferred_account = (
-                request_state.previous_response_id is not None and request_state.preferred_account_id is not None
+                request_state.previous_response_id is not None
+                and request_state.preferred_account_id is not None
+                and not can_replay_owner_unavailable
             ) or request_state.file_required_preferred_account
             try:
                 account = await proxy._select_websocket_connect_account(
@@ -1432,6 +1437,14 @@ class _WebSocketMixin:
                 request_state.force_refresh_account_id = None
                 if request_state.preferred_account_id == forced_refresh_account_id:
                     request_state.preferred_account_id = None
+            if (
+                can_replay_owner_unavailable
+                and request_state.preferred_account_id is not None
+                and account.id != request_state.preferred_account_id
+                and _prepare_websocket_request_state_for_owner_unavailable_replay(request_state) is None
+            ):
+                await proxy._load_balancer.release_account_lease(selected_stream_lease)
+                return None, None
 
             try:
                 connect_result = await proxy._try_open_websocket_connect_attempt(
@@ -1458,6 +1471,8 @@ class _WebSocketMixin:
                     last_failover_exc = exc
                     last_failover_account = account
                     excluded_account_ids.add(account.id)
+                    if can_replay_owner_unavailable:
+                        _prepare_websocket_request_state_for_owner_unavailable_replay(request_state)
                     continue
                 error = _parse_openai_error(exc.payload)
                 error_code = _normalize_error_code(error.code if error else None, error.type if error else None)
@@ -2837,10 +2852,21 @@ class _WebSocketMixin:
                 {"message": _websocket_event_error_message(event_type, payload) or "Upstream error"},
                 retry_error_code,
             )
-            event, payload, event_type, downstream_text = _rewrite_websocket_previous_response_owner_unavailable_event(
-                request_state=request_state,
-            )
-            retry_error_code = None
+            if _prepare_websocket_request_state_for_owner_unavailable_replay(request_state) is not None:
+                upstream_control.reconnect_requested = True
+                upstream_control.suppress_downstream_event = True
+                upstream_control.replay_request_state = request_state
+                return downstream_text
+            else:
+                (
+                    event,
+                    payload,
+                    event_type,
+                    downstream_text,
+                ) = _rewrite_websocket_previous_response_owner_unavailable_event(
+                    request_state=request_state,
+                )
+                retry_error_code = None
         if retry_error_code is not None:
             if retry_is_previous_response_not_found:
                 if not (
