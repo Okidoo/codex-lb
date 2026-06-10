@@ -8474,6 +8474,8 @@ async def test_connect_proxy_websocket_previous_response_owner_usage_limit_repla
     monkeypatch.setattr(service, "_ensure_fresh", AsyncMock(side_effect=[account_owner, account_other]))
     monkeypatch.setattr(service, "_open_upstream_websocket", AsyncMock(side_effect=[first_handshake_error, upstream]))
     monkeypatch.setattr(service, "_release_websocket_reservation", AsyncMock())
+    release_account_lease = AsyncMock()
+    monkeypatch.setattr(service._load_balancer, "release_account_lease", release_account_lease)
 
     request_state = proxy_service._WebSocketRequestState(
         request_id="ws_req_prev_owner_handshake_429_replay",
@@ -8491,6 +8493,18 @@ async def test_connect_proxy_websocket_previous_response_owner_usage_limit_repla
         fresh_upstream_request_text=json.dumps(fresh_payload, separators=(",", ":")),
         fresh_upstream_request_is_retry_safe=True,
     )
+    response_create_gate = asyncio.Semaphore(1)
+    await response_create_gate.acquire()
+    response_create_lease = AccountLease(
+        lease_id="lease_prev_owner_handshake_replay",
+        account_id=account_owner.id,
+        kind="response_create",
+        acquired_at=0.0,
+    )
+    request_state.response_create_gate = response_create_gate
+    request_state.response_create_gate_acquired = True
+    request_state.account_response_create_lease = response_create_lease
+    request_state.account_response_create_release = release_account_lease
 
     websocket_send = AsyncMock()
     websocket = cast(WebSocket, SimpleNamespace(send_text=websocket_send))
@@ -8512,9 +8526,15 @@ async def test_connect_proxy_websocket_previous_response_owner_usage_limit_repla
     assert selected_upstream is upstream
     assert seen_excluded_account_ids == [set(), {account_owner.id}]
     mark_rate_limit.assert_awaited_once()
+    release_account_lease.assert_any_await(response_create_lease)
     assert request_state.previous_response_id is None
     assert request_state.preferred_account_id is None
     assert request_state.replay_count == 1
+    assert request_state.response_create_gate_acquired is True
+    assert request_state.response_create_gate is response_create_gate
+    assert response_create_gate.locked() is True
+    assert request_state.account_response_create_lease is None
+    assert request_state.account_response_create_release is None
     assert "previous_response_id" not in cast(str, request_state.request_text)
     websocket_send.assert_not_awaited()
     assert request_logs.calls == []
@@ -12385,6 +12405,8 @@ async def test_process_upstream_websocket_text_replays_owner_pinned_usage_limit_
 
     monkeypatch.setattr(service, "_finalize_websocket_request_state", finalize_request_state)
     monkeypatch.setattr(service, "_handle_stream_error", handle_stream_error)
+    release_account_lease = AsyncMock()
+    monkeypatch.setattr(service._load_balancer, "release_account_lease", release_account_lease)
 
     fresh_payload = {
         "type": "response.create",
@@ -12415,7 +12437,6 @@ async def test_process_upstream_websocket_text_replays_owner_pinned_usage_limit_
         kind="response_create",
         acquired_at=0.0,
     )
-    release_account_lease = AsyncMock()
     pending_request.response_create_gate = response_create_gate
     pending_request.response_create_gate_acquired = True
     pending_request.account_response_create_lease = response_create_lease
@@ -12459,7 +12480,9 @@ async def test_process_upstream_websocket_text_replays_owner_pinned_usage_limit_
     assert pending_request.preferred_account_id is None
     assert pending_request.replay_count == 1
     assert pending_request.awaiting_response_created is True
-    assert pending_request.response_create_gate_acquired is False
+    assert pending_request.response_create_gate_acquired is True
+    assert pending_request.response_create_gate is response_create_gate
+    assert response_create_gate.locked() is True
     assert pending_request.account_response_create_lease is None
     assert pending_request.account_response_create_release is None
     assert "previous_response_id" not in cast(str, pending_request.request_text)

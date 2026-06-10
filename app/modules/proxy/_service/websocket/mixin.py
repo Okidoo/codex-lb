@@ -1475,7 +1475,7 @@ class _WebSocketMixin:
                     last_failover_account = account
                     excluded_account_ids.add(account.id)
                     if can_replay_owner_unavailable:
-                        await _release_websocket_response_create_gate(request_state)
+                        await proxy._release_request_state_account_response_create_lease(request_state)
                         _prepare_websocket_request_state_for_owner_unavailable_replay(request_state)
                     continue
                 error = _parse_openai_error(exc.payload)
@@ -2858,7 +2858,7 @@ class _WebSocketMixin:
             )
             replay_text = None
             if _websocket_owner_unavailable_request_can_replay_fresh(request_state):
-                await _release_websocket_response_create_gate(request_state)
+                await proxy._release_request_state_account_response_create_lease(request_state)
                 replay_text = _prepare_websocket_request_state_for_owner_unavailable_replay(request_state)
             if replay_text is not None:
                 upstream_control.reconnect_requested = True
