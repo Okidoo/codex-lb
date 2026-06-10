@@ -35,3 +35,14 @@ The proxy SHALL replay a Codex-native direct Responses WebSocket request pinned 
 - **WHEN** that owner returns an account-recovery quota failure
 - **THEN** the proxy preserves the file-owner routing contract
 - **AND** it does not replay the request on another account
+
+#### Scenario: owner replay releases the failed create lease first
+
+- **GIVEN** a direct Responses WebSocket request has already acquired a
+  response-create lease for `account_a`
+- **AND** the proxy has captured a retry-safe fresh full-resend body
+- **WHEN** `account_a` returns an account-recovery quota failure before
+  `response.created`
+- **THEN** the proxy releases `account_a`'s response-create lease before
+  requeueing the request
+- **AND** the replay must acquire admission for the next selected account

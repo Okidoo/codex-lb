@@ -1287,8 +1287,9 @@ def _pop_matching_websocket_request_states(
 
 async def _release_websocket_response_create_gate(
     request_state: _WebSocketRequestState,
-    response_create_gate: asyncio.Semaphore,
+    response_create_gate: asyncio.Semaphore | None = None,
 ) -> None:
+    response_create_gate = response_create_gate or request_state.response_create_gate
     account_response_create_lease = request_state.account_response_create_lease
     account_response_create_release = request_state.account_response_create_release
     request_state.account_response_create_lease = None
@@ -1303,7 +1304,8 @@ async def _release_websocket_response_create_gate(
     if not request_state.response_create_gate_acquired:
         return
     request_state.response_create_gate_acquired = False
-    response_create_gate.release()
+    if response_create_gate is not None:
+        response_create_gate.release()
 
 
 def _pop_terminal_websocket_request_state(

@@ -12407,6 +12407,19 @@ async def test_process_upstream_websocket_text_replays_owner_pinned_usage_limit_
         fresh_upstream_request_text=json.dumps(fresh_payload, separators=(",", ":")),
         fresh_upstream_request_is_retry_safe=True,
     )
+    response_create_gate = asyncio.Semaphore(1)
+    await response_create_gate.acquire()
+    response_create_lease = AccountLease(
+        lease_id="lease_prev_quota_replay",
+        account_id=account.id,
+        kind="response_create",
+        acquired_at=0.0,
+    )
+    release_account_lease = AsyncMock()
+    pending_request.response_create_gate = response_create_gate
+    pending_request.response_create_gate_acquired = True
+    pending_request.account_response_create_lease = response_create_lease
+    pending_request.account_response_create_release = release_account_lease
     pending_requests = deque([pending_request])
     upstream_control = proxy_service._WebSocketUpstreamControl()
     upstream_payload = {
@@ -12428,10 +12441,11 @@ async def test_process_upstream_websocket_text_replays_owner_pinned_usage_limit_
         pending_lock=anyio.Lock(),
         api_key=None,
         upstream_control=upstream_control,
-        response_create_gate=asyncio.Semaphore(1),
+        response_create_gate=response_create_gate,
     )
 
     assert downstream_text == upstream_text
+    release_account_lease.assert_awaited_once_with(response_create_lease)
     handle_stream_error.assert_awaited_once()
     handle_call = handle_stream_error.await_args
     assert handle_call is not None
@@ -12444,6 +12458,10 @@ async def test_process_upstream_websocket_text_replays_owner_pinned_usage_limit_
     assert pending_request.previous_response_id is None
     assert pending_request.preferred_account_id is None
     assert pending_request.replay_count == 1
+    assert pending_request.awaiting_response_created is True
+    assert pending_request.response_create_gate_acquired is False
+    assert pending_request.account_response_create_lease is None
+    assert pending_request.account_response_create_release is None
     assert "previous_response_id" not in cast(str, pending_request.request_text)
     assert list(pending_requests) == []
 

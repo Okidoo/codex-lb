@@ -948,6 +948,9 @@ class _WebSocketMixin:
                         continue
                     account_lease = request_state.websocket_stream_lease
                     request_state.websocket_stream_lease = None
+                    if text_data is not None and request_state.request_text != text_data:
+                        text_data = request_state.request_text
+                        payload = _parse_websocket_payload(text_data) if text_data is not None else None
                     upstream_turn_state = _facade()._upstream_turn_state_from_socket(upstream) or upstream_turn_state
                     upstream_control = _WebSocketUpstreamControl()
                     upstream_reader = asyncio.create_task(
@@ -1472,6 +1475,7 @@ class _WebSocketMixin:
                     last_failover_account = account
                     excluded_account_ids.add(account.id)
                     if can_replay_owner_unavailable:
+                        await _release_websocket_response_create_gate(request_state)
                         _prepare_websocket_request_state_for_owner_unavailable_replay(request_state)
                     continue
                 error = _parse_openai_error(exc.payload)
@@ -2852,7 +2856,11 @@ class _WebSocketMixin:
                 {"message": _websocket_event_error_message(event_type, payload) or "Upstream error"},
                 retry_error_code,
             )
-            if _prepare_websocket_request_state_for_owner_unavailable_replay(request_state) is not None:
+            replay_text = None
+            if _websocket_owner_unavailable_request_can_replay_fresh(request_state):
+                await _release_websocket_response_create_gate(request_state)
+                replay_text = _prepare_websocket_request_state_for_owner_unavailable_replay(request_state)
+            if replay_text is not None:
                 upstream_control.reconnect_requested = True
                 upstream_control.suppress_downstream_event = True
                 upstream_control.replay_request_state = request_state
