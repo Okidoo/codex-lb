@@ -153,7 +153,7 @@ def test_pr_guard_accepts_dependency_only_release_managed_file_edits(tmp_path: P
     )
 
     assert result.returncode == 0, result.stderr
-    assert "No release-managed version metadata changed" in result.stdout
+    assert "No release-managed version files changed" in result.stdout
 
 
 def test_pr_guard_rejects_inconsistent_release_managed_beta_metadata(tmp_path: Path) -> None:
