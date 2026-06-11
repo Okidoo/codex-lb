@@ -522,6 +522,55 @@ async def test_accounts_upsert_merge_by_chatgpt_identity_matches_email_row_among
 
 
 @pytest.mark.asyncio
+async def test_accounts_upsert_merge_by_chatgpt_identity_matches_label_only_workspace_slot(db_setup):
+    async with SessionLocal() as session:
+        repo = AccountsRepository(session)
+
+        mavos = _make_account_with_chatgpt_id(
+            "acc_mavos",
+            "shared-label@example.com",
+            "chatgpt_label_collision",
+        )
+        mavos.workspace_label = "Mavos"
+        await repo.upsert(mavos, merge_by_email=False)
+
+        triton = _make_account_with_chatgpt_id(
+            "acc_triton",
+            "shared-label@example.com",
+            "chatgpt_label_collision",
+        )
+        triton.workspace_label = "Triton"
+        await repo.upsert(triton, merge_by_email=False)
+
+        reauth = _make_account_with_chatgpt_id(
+            "acc_triton",
+            "shared-label@example.com",
+            "chatgpt_label_collision",
+        )
+        reauth.workspace_label = "Triton"
+        reauth.plan_type = "team"
+        saved = await repo.upsert(reauth, merge_by_email=False, merge_by_chatgpt_identity=True)
+
+        assert saved.id == "acc_triton"
+        assert saved.workspace_label == "Triton"
+        assert saved.plan_type == "team"
+
+        rows = list(
+            (
+                await session.execute(
+                    select(Account).where(Account.chatgpt_account_id == "chatgpt_label_collision")
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert {(row.id, row.workspace_label, row.plan_type) for row in rows} == {
+            ("acc_mavos", "Mavos", "plus"),
+            ("acc_triton", "Triton", "team"),
+        }
+
+
+@pytest.mark.asyncio
 async def test_accounts_upsert_merge_by_chatgpt_identity_picks_oldest_canonical(db_setup):
     async with SessionLocal() as session:
         repo = AccountsRepository(session)

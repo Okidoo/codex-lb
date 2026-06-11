@@ -202,6 +202,7 @@ class AccountsRepository:
             canonical = await self._account_by_chatgpt_identity(
                 account.chatgpt_account_id,
                 workspace_id=account.workspace_id,
+                workspace_label=account.workspace_label,
                 email=account.email,
             )
             if canonical is not None:
@@ -210,6 +211,7 @@ class AccountsRepository:
                     canonical=canonical,
                     chatgpt_account_id=account.chatgpt_account_id,
                     workspace_id=account.workspace_id,
+                    workspace_label=account.workspace_label,
                     email=account.email,
                 )
                 await self._session.commit()
@@ -306,6 +308,7 @@ class AccountsRepository:
         chatgpt_account_id: str,
         *,
         workspace_id: str | None,
+        workspace_label: str | None,
         email: str | None,
     ) -> Account | None:
         """Return the canonical local account row for a ChatGPT identity.
@@ -321,10 +324,19 @@ class AccountsRepository:
         stmt = select(Account).where(Account.chatgpt_account_id == chatgpt_account_id)
         order_by: list[Any] = [Account.created_at.asc(), Account.id.asc()]
         if workspace_id:
-            stmt = stmt.where(or_(Account.workspace_id == workspace_id, Account.workspace_id.is_(None)))
+            unknown_workspace = Account.workspace_id.is_(None)
+            if workspace_label:
+                unknown_workspace = unknown_workspace & (Account.workspace_label == workspace_label)
+            else:
+                unknown_workspace = unknown_workspace & Account.workspace_label.is_(None)
+            stmt = stmt.where(or_(Account.workspace_id == workspace_id, unknown_workspace))
             order_by.insert(0, Account.workspace_id.is_(None).asc())
         else:
             stmt = stmt.where(Account.workspace_id.is_(None))
+            if workspace_label:
+                stmt = stmt.where(Account.workspace_label == workspace_label)
+            else:
+                stmt = stmt.where(Account.workspace_label.is_(None))
 
         result = await self._session.execute(stmt.order_by(*order_by))
         candidates = list(result.scalars().all())
@@ -346,6 +358,7 @@ class AccountsRepository:
         canonical: Account,
         chatgpt_account_id: str,
         workspace_id: str | None,
+        workspace_label: str | None,
         email: str | None,
     ) -> None:
         duplicate_stmt = select(Account.id).where(
@@ -356,6 +369,10 @@ class AccountsRepository:
             duplicate_stmt = duplicate_stmt.where(Account.email == email)
         if workspace_id is None:
             duplicate_stmt = duplicate_stmt.where(Account.workspace_id.is_(None))
+            if workspace_label:
+                duplicate_stmt = duplicate_stmt.where(Account.workspace_label == workspace_label)
+            else:
+                duplicate_stmt = duplicate_stmt.where(Account.workspace_label.is_(None))
         else:
             duplicate_stmt = duplicate_stmt.where(Account.workspace_id == workspace_id)
         duplicate_accounts = (await self._session.execute(duplicate_stmt)).scalars().all()

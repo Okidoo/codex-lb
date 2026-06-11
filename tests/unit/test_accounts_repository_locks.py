@@ -59,9 +59,11 @@ def _make_postgres_repo(monkeypatch: pytest.MonkeyPatch) -> tuple[AccountsReposi
         _chatgpt_id: str,
         *,
         workspace_id: str | None,
+        workspace_label: str | None,
         email: str | None,
     ):
         del workspace_id
+        del workspace_label
         del email
         return None
 
