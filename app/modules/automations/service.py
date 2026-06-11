@@ -832,14 +832,16 @@ class AutomationsService:
         for cycle_account in cycle.accounts:
             if cycle_account.scheduled_for > now_utc:
                 continue
+            existing_cycle_run = existing_cycle_runs_by_account.get(cycle_account.account_id)
             if cycle_account.account_id not in eligible_cycle_account_ids:
+                if existing_cycle_run is not None and existing_cycle_run.status != AUTOMATION_RUN_STATUS_RUNNING:
+                    continue
                 await self._repository.delete_run_cycle_account(
                     cycle_key=cycle_key,
                     account_id=cycle_account.account_id,
                 )
                 cycle_expected_accounts = max(0, cycle_expected_accounts - 1)
                 continue
-            existing_cycle_run = existing_cycle_runs_by_account.get(cycle_account.account_id)
             if existing_cycle_run is not None:
                 existing_run_is_stale = (
                     existing_cycle_run.started_at <= existing_cycle_run.scheduled_for
