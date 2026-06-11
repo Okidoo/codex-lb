@@ -281,11 +281,12 @@ class AccountsRepository:
                 return existing_by_id
             account.id = await self._next_available_account_id(account.id)
         elif not preserve_unknown_workspace_duplicates:
-            existing_by_email = (
-                await self._single_unknown_workspace_account_by_email(account.email)
-                if _workspace_slot_key(account)
-                else await self._single_account_by_email(account.email)
-            )
+            if _workspace_slot_key(account):
+                existing_by_email = await self._single_unknown_workspace_account_by_email(account.email)
+            elif account.chatgpt_account_id:
+                existing_by_email = None
+            else:
+                existing_by_email = await self._single_account_by_email(account.email)
             if existing_by_email and not _can_reuse_email_fallback(existing_by_email, account):
                 existing_by_email = None
             if existing_by_email:
