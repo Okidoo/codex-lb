@@ -958,7 +958,6 @@ class AutomationsService:
         *,
         forced_account_id: str | None = None,
     ) -> AutomationRunData:
-        had_prior_failures = False
         attempt_count = 0
         last_error_code: str | None = "no_available_accounts"
         last_error_message: str | None = "No available accounts configured for automation job"
@@ -985,7 +984,6 @@ class AutomationsService:
             else:
                 account = cached_accounts_by_id.get(account_id)
             if account is None:
-                had_prior_failures = True
                 last_error_code = "account_not_found"
                 last_error_message = f"Account '{account_id}' not found"
                 continue
@@ -1035,10 +1033,9 @@ class AutomationsService:
                     reasoning_tokens=reasoning_tokens,
                     service_tier=service_tier,
                 )
-                status = AUTOMATION_RUN_STATUS_PARTIAL if had_prior_failures else AUTOMATION_RUN_STATUS_SUCCESS
                 completed = await self._repository.complete_run(
                     run.id,
-                    status=status,
+                    status=AUTOMATION_RUN_STATUS_SUCCESS,
                     finished_at=utcnow(),
                     account_id=account.id,
                     error_code=None,
@@ -1047,14 +1044,12 @@ class AutomationsService:
                 )
                 return self._to_run_data(completed)
             except RefreshError as exc:
-                had_prior_failures = True
                 last_error_code = exc.code or "authentication_error"
                 last_error_message = exc.message
                 if self._is_retryable_account_failure(last_error_code):
                     continue
                 break
             except ProxyResponseError as exc:
-                had_prior_failures = True
                 error_code, error_message = _extract_proxy_error(exc)
                 last_error_code = error_code
                 last_error_message = error_message
@@ -1072,7 +1067,6 @@ class AutomationsService:
                     continue
                 break
             except Exception as exc:
-                had_prior_failures = True
                 last_error_code = "automation_ping_failed"
                 last_error_message = str(exc) or "Automation ping failed"
                 if request_started_at is not None:
@@ -1530,16 +1524,14 @@ class AutomationsService:
         cycle_key: str,
         expected_account_ids: list[str],
     ) -> str | None:
-        if run.account_id:
-            return run.account_id
         parts = cycle_key.split(":")
         if len(parts) != 3 or parts[0] != "manual" or not parts[2]:
-            return None
+            return run.account_id
         cycle_id = parts[2]
         for account_id in expected_account_ids:
             if run.slot_key == _manual_slot_key(job.id, cycle_id, account_id):
                 return account_id
-        return None
+        return run.account_id
 
     @staticmethod
     def _resolve_scheduled_cycle_run_account_id(
@@ -1549,12 +1541,10 @@ class AutomationsService:
         due_slot: datetime,
         expected_account_ids: list[str],
     ) -> str | None:
-        if run.account_id:
-            return run.account_id
         for account_id in expected_account_ids:
             if run.slot_key == _scheduled_slot_key(job.id, account_id=account_id, due_slot=due_slot):
                 return account_id
-        return None
+        return run.account_id
 
     @staticmethod
     def _should_include_manual_cycle_account(

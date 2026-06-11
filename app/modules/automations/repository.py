@@ -1025,19 +1025,8 @@ class AutomationsRepository:
             cycle_runs.c.trigger == "scheduled",
             cycle_runs.c.attempt_count > 0,
         )
-        completed_non_null_account = case(
-            (cycle_runs.c.status != "running", cycle_runs.c.account_id),
-            else_=None,
-        )
-        completed_null_account = case(
-            (
-                and_(
-                    cycle_runs.c.status != "running",
-                    cycle_runs.c.account_id.is_(None),
-                    countable_outcome,
-                ),
-                1,
-            ),
+        completed_countable_run = case(
+            (and_(cycle_runs.c.status != "running", countable_outcome), 1),
             else_=0,
         )
 
@@ -1050,9 +1039,7 @@ class AutomationsRepository:
             func.min(case((cycle_runs.c.trigger != "manual", cycle_runs.c.started_at), else_=None)).label(
                 "non_manual_cycle_started_at"
             ),
-            (func.count(func.distinct(completed_non_null_account)) + func.sum(completed_null_account)).label(
-                "completed_accounts"
-            ),
+            func.sum(completed_countable_run).label("completed_accounts"),
             func.sum(case((and_(countable_outcome, cycle_runs.c.status == "success"), 1), else_=0)).label(
                 "success_count"
             ),
@@ -1234,27 +1221,14 @@ class AutomationsRepository:
                 cycle_runs.c.trigger == "scheduled",
                 cycle_runs.c.attempt_count > 0,
             )
-            completed_non_null_account = case(
-                (cycle_runs.c.status != "running", cycle_runs.c.account_id),
-                else_=None,
-            )
-            completed_null_account = case(
-                (
-                    and_(
-                        cycle_runs.c.status != "running",
-                        cycle_runs.c.account_id.is_(None),
-                        countable_outcome,
-                    ),
-                    1,
-                ),
+            completed_countable_run = case(
+                (and_(cycle_runs.c.status != "running", countable_outcome), 1),
                 else_=0,
             )
 
             cycle_agg_stmt = select(
                 cycle_runs.c.cycle_key.label("cycle_key"),
-                (func.count(func.distinct(completed_non_null_account)) + func.sum(completed_null_account)).label(
-                    "completed_accounts"
-                ),
+                func.sum(completed_countable_run).label("completed_accounts"),
                 func.sum(case((and_(countable_outcome, cycle_runs.c.status == "success"), 1), else_=0)).label(
                     "success_count"
                 ),

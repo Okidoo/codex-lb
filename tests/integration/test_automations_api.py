@@ -582,7 +582,7 @@ async def test_automations_run_now_fails_over_to_next_account(async_client, monk
     runs_payload = runs_response.json()["items"]
     assert len(runs_payload) == 2
     statuses = {entry["status"] for entry in runs_payload}
-    assert statuses == {"partial", "success"}
+    assert statuses == {"success"}
 
     grouped_response = await async_client.get(
         "/api/automations/runs",
@@ -592,10 +592,10 @@ async def test_automations_run_now_fails_over_to_next_account(async_client, monk
     grouped_payload = grouped_response.json()
     assert grouped_payload["total"] == 1
     grouped_item = grouped_payload["items"][0]
-    assert grouped_item["effectiveStatus"] == "partial"
+    assert grouped_item["effectiveStatus"] == "success"
     assert grouped_item["totalAccounts"] == 2
-    assert grouped_item["completedAccounts"] == 1
-    assert grouped_item["pendingAccounts"] == 1
+    assert grouped_item["completedAccounts"] == 2
+    assert grouped_item["pendingAccounts"] == 0
 
     grouped_partial_response = await async_client.get(
         "/api/automations/runs",
@@ -609,28 +609,27 @@ async def test_automations_run_now_fails_over_to_next_account(async_client, monk
     )
     assert grouped_partial_response.status_code == 200
     grouped_partial_payload = grouped_partial_response.json()
-    assert grouped_partial_payload["total"] == 1
-    assert grouped_partial_payload["items"][0]["effectiveStatus"] == "partial"
+    assert grouped_partial_payload["total"] == 0
 
-    grouped_partial_for_account_response = await async_client.get(
+    grouped_success_for_account_response = await async_client.get(
         "/api/automations/runs",
         params={
             "automationId": automation_id,
             "trigger": "manual",
             "accountId": accounts[1].id,
-            "status": "partial",
+            "status": "success",
             "limit": 25,
             "offset": 0,
         },
     )
-    assert grouped_partial_for_account_response.status_code == 200
-    grouped_partial_for_account_payload = grouped_partial_for_account_response.json()
-    assert grouped_partial_for_account_payload["total"] == 1
-    filtered_grouped_item = grouped_partial_for_account_payload["items"][0]
-    assert filtered_grouped_item["effectiveStatus"] == "partial"
+    assert grouped_success_for_account_response.status_code == 200
+    grouped_success_for_account_payload = grouped_success_for_account_response.json()
+    assert grouped_success_for_account_payload["total"] == 1
+    filtered_grouped_item = grouped_success_for_account_payload["items"][0]
+    assert filtered_grouped_item["effectiveStatus"] == "success"
     assert filtered_grouped_item["totalAccounts"] == 2
-    assert filtered_grouped_item["completedAccounts"] == 1
-    assert filtered_grouped_item["pendingAccounts"] == 1
+    assert filtered_grouped_item["completedAccounts"] == 2
+    assert filtered_grouped_item["pendingAccounts"] == 0
 
     grouped_success_response = await async_client.get(
         "/api/automations/runs",
@@ -644,14 +643,15 @@ async def test_automations_run_now_fails_over_to_next_account(async_client, monk
     )
     assert grouped_success_response.status_code == 200
     grouped_success_payload = grouped_success_response.json()
-    assert grouped_success_payload["total"] == 0
+    assert grouped_success_payload["total"] == 1
+    assert grouped_success_payload["items"][0]["effectiveStatus"] == "success"
 
     options_with_status_response = await async_client.get(
         "/api/automations/runs/options",
         params={
             "automationId": automation_id,
             "trigger": "manual",
-            "status": "partial",
+            "status": "success",
         },
     )
     assert options_with_status_response.status_code == 200
