@@ -280,14 +280,11 @@ class AccountsRepository:
                 await self._session.refresh(existing_by_id)
                 return existing_by_id
             account.id = await self._next_available_account_id(account.id)
-        elif not preserve_unknown_workspace_duplicates:
-            existing_by_email = (
-                await self._single_unknown_workspace_account_by_email(account.email)
-                if account.workspace_id
-                else await self._single_account_by_email(account.email)
-                if not account.workspace_id
-                else None
-            )
+        elif (
+            not preserve_unknown_workspace_duplicates
+            and _workspace_slot_key(account) is None
+        ):
+            existing_by_email = await self._single_account_by_email(account.email)
             if existing_by_email and not _can_reuse_email_fallback(existing_by_email, account):
                 existing_by_email = None
             if existing_by_email:
@@ -667,16 +664,6 @@ class AccountsRepository:
                 .where(Account.chatgpt_account_id == account.chatgpt_account_id)
                 .where(Account.email == account.email)
                 .where(column == value)
-                .order_by(Account.created_at.asc(), Account.id.asc())
-                .limit(1)
-            )
-            if matched := result.scalar_one_or_none():
-                return matched
-        if account.chatgpt_account_id and account.email and not workspace_slot:
-            result = await self._session.execute(
-                select(Account)
-                .where(Account.chatgpt_account_id == account.chatgpt_account_id)
-                .where(Account.email == account.email)
                 .order_by(Account.created_at.asc(), Account.id.asc())
                 .limit(1)
             )
