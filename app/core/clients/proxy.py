@@ -2232,6 +2232,7 @@ async def _stream_responses_with_session(
                     "json": payload_dict,
                     "headers": current_headers,
                     "timeout": remaining_request_timeout or request_total_timeout,
+                    "buffer_response": False,
                 }
                 request_with_metadata = getattr(active_codex_client, "request_with_route_metadata", None)
                 if callable(request_with_metadata):

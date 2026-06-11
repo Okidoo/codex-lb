@@ -159,7 +159,15 @@ class CodexResponsesWebSocket:
         if msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSING, aiohttp.WSMsgType.CLOSED):
             return UpstreamWebSocketMessage(kind="close")
         if msg.type == aiohttp.WSMsgType.ERROR:
-            return UpstreamWebSocketMessage(kind="error", error=str(msg.data))
+            exception = msg.data if isinstance(msg.data, BaseException) else None
+            return UpstreamWebSocketMessage(
+                kind="error",
+                error=(
+                    codex_transport_error_message("websocket receive", self._endpoint_id, exception)
+                    if exception is not None
+                    else "Upstream websocket error"
+                ),
+            )
         if msg.type == aiohttp.WSMsgType.TEXT:
             text = msg.data if isinstance(msg.data, str) else str(msg.data)
             return UpstreamWebSocketMessage(kind="text", text=text)

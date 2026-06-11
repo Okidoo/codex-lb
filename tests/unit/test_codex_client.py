@@ -90,10 +90,29 @@ async def test_request_passes_resolver_proxy_and_builtin_fingerprint(route: Reso
     session = _Session()
     client = CodexClient(session)
 
-    await client.request("POST", "https://upstream.test", route=route, json={"x": 1})
+    response = await client.request("POST", "https://upstream.test", route=route, json={"x": 1})
 
     assert session.calls[0]["proxy"] == "http://u:p@proxy.test:8080"
     assert session.calls[0]["json"] == {"x": 1}
+    assert response.content == b'{"ok": true}'
+
+
+@pytest.mark.asyncio
+async def test_streaming_request_can_opt_out_of_response_buffering(route: ResolvedUpstreamRoute) -> None:
+    session = _Session()
+    client = CodexClient(session)
+
+    result = await client.request_with_route_metadata(
+        "POST",
+        "https://upstream.test",
+        route=route,
+        buffer_response=False,
+        json={"x": 1},
+    )
+
+    assert session.calls[0]["proxy"] == "http://u:p@proxy.test:8080"
+    assert "buffer_response" not in session.calls[0]
+    assert isinstance(result.response, _Response)
 
 
 @pytest.mark.asyncio

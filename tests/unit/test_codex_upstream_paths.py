@@ -399,6 +399,7 @@ async def test_stream_responses_uses_codex_client_when_route_is_resolved(route: 
 
     assert events == ['data: {"type":"response.completed","response":{"id":"resp_1"}}\n\n']
     assert client.calls[0]["url"].endswith("/backend-api/codex/responses")
+    assert client.calls[0]["buffer_response"] is False
     assert trace.endpoint_id == "ep_1"
 
 
