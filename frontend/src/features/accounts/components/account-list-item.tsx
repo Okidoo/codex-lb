@@ -41,7 +41,7 @@ export function AccountListItem({
   const emailSubtitle = account.displayName && account.displayName !== account.email
     ? account.email
     : null;
-  const workspaceLabel = account.workspaceLabel || account.workspaceId || "Personal / unknown workspace";
+  const workspaceLabel = account.chatgptAccountId || account.workspaceLabel || account.workspaceId || "Personal / unknown workspace";
   const seatLabel = account.seatType ? ` | ${formatSlug(account.seatType)}` : "";
   const slotSubtitle = `${formatSlug(account.planType)} | ${workspaceLabel}${seatLabel}`;
   const idSuffix = showAccountId ? ` | ID ${formatCompactAccountId(account.accountId)}` : "";

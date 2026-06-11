@@ -85,7 +85,7 @@ export function AccountDetail({
       ? account.email
       : null;
   const idSuffix = showAccountId ? ` (${compactId})` : "";
-  const workspaceLabel = account.workspaceLabel || account.workspaceId || "Personal / unknown workspace";
+  const workspaceLabel = account.chatgptAccountId || account.workspaceLabel || account.workspaceId || "Personal / unknown workspace";
   const seatLabel = account.seatType ? ` | ${formatSlug(account.seatType)}` : "";
 
   return (
