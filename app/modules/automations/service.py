@@ -1860,9 +1860,15 @@ class AutomationsService:
         cycle_finished_at = (
             summary.cycle_finished_at if summary is not None and apply_cycle_terminal_overrides else None
         )
-        error_code = summary.error_code if summary is not None and apply_cycle_terminal_overrides else run.error_code
+        error_code = (
+            summary.error_code or run.error_code
+            if summary is not None and apply_cycle_terminal_overrides
+            else run.error_code
+        )
         error_message = (
-            summary.error_message if summary is not None and apply_cycle_terminal_overrides else run.error_message
+            summary.error_message or run.error_message
+            if summary is not None and apply_cycle_terminal_overrides
+            else run.error_message
         )
         scheduled_for = cycle_started_at or run.scheduled_for
         started_at = cycle_started_at or run.started_at

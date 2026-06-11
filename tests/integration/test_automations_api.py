@@ -4002,6 +4002,7 @@ async def test_automations_manual_cycle_without_eligible_accounts_keeps_zero_tot
     assert run_response.status_code == 202
     run_payload = run_response.json()
     assert run_payload["status"] == "failed"
+    assert run_payload["errorCode"] == "no_available_accounts"
     run_id = run_payload["id"]
 
     await _set_account_status(accounts[0].id, AccountStatus.ACTIVE)
@@ -4018,11 +4019,15 @@ async def test_automations_manual_cycle_without_eligible_accounts_keeps_zero_tot
     assert run_item["totalAccounts"] == 0
     assert run_item["completedAccounts"] == 0
     assert run_item["pendingAccounts"] == 0
+    assert run_item["errorCode"] == "no_available_accounts"
+    assert run_item["errorMessage"] == "No available accounts configured for automation job"
 
     details_response = await async_client.get(f"/api/automations/runs/{run_id}/details")
     assert details_response.status_code == 200
     details_payload = details_response.json()
     assert details_payload["run"]["id"] == run_id
+    assert details_payload["run"]["errorCode"] == "no_available_accounts"
+    assert details_payload["run"]["errorMessage"] == "No available accounts configured for automation job"
     assert details_payload["totalAccounts"] == 0
     assert details_payload["completedAccounts"] == 0
     assert details_payload["pendingAccounts"] == 0
