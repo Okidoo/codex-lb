@@ -53,6 +53,27 @@ from app.modules.usage.repository import AdditionalUsageRepository, UsageReposit
 pytestmark = pytest.mark.unit
 
 
+def _without_installation_metadata(value: Any) -> Any:
+    if isinstance(value, list):
+        return [_without_installation_metadata(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    normalized = {key: _without_installation_metadata(item) for key, item in value.items()}
+    client_metadata = normalized.get("client_metadata")
+    if isinstance(client_metadata, dict):
+        metadata = dict(client_metadata)
+        metadata.pop("x-codex-installation-id", None)
+        if metadata:
+            normalized["client_metadata"] = metadata
+        else:
+            normalized.pop("client_metadata", None)
+    return normalized
+
+
+def _json_text_without_installation_metadata(text: str) -> Any:
+    return _without_installation_metadata(json.loads(text))
+
+
 def test_relative_availability_settings_default_when_stored_values_are_null():
     settings = cast(Any, SimpleNamespace(relative_availability_power=None, relative_availability_top_k=None))
 
@@ -7293,7 +7314,8 @@ async def test_http_bridge_retries_security_work_warning_on_authorized_account(m
         }
     ]
     assert session.account is authorized_account
-    assert retry_upstream.sent_text == [request_text]
+    assert len(retry_upstream.sent_text) == 1
+    assert _json_text_without_installation_metadata(retry_upstream.sent_text[0]) == json.loads(request_text)
     assert list(session.pending_requests) == [request_state]
     assert session.queued_request_count == 1
     assert request_state.replay_count == 1
@@ -12672,7 +12694,9 @@ async def test_proxy_responses_websocket_transparent_replay_preserves_sticky_thr
     assert first_upstream.closed is True
     assert len(first_upstream.sent_text) == 1
     assert len(second_upstream.sent_text) == 1
-    assert json.loads(first_upstream.sent_text[0]) == json.loads(second_upstream.sent_text[0])
+    first_payload = _json_text_without_installation_metadata(first_upstream.sent_text[0])
+    second_payload = _json_text_without_installation_metadata(second_upstream.sent_text[0])
+    assert first_payload == second_payload
 
 
 @pytest.mark.asyncio
@@ -13301,7 +13325,9 @@ async def test_proxy_responses_websocket_replays_precreated_request_after_upstre
     assert connect_calls[1]["reallocate_sticky"] is False
     assert len(second_upstream.sent_text) == 1
     assert len(first_upstream.sent_text) >= 1
-    assert json.loads(first_upstream.sent_text[-1]) == json.loads(second_upstream.sent_text[0])
+    first_payload = _json_text_without_installation_metadata(first_upstream.sent_text[-1])
+    second_payload = _json_text_without_installation_metadata(second_upstream.sent_text[0])
+    assert first_payload == second_payload
 
 
 @pytest.mark.asyncio
@@ -21279,8 +21305,15 @@ async def test_submit_http_bridge_request_reinlines_final_text(monkeypatch):
         queue_limit=1,
     )
 
-    inline.assert_awaited_once_with(original_text, request_state)
-    send_text.assert_awaited_once_with(inlined_text)
+    inline.assert_awaited_once()
+    inline_await = inline.await_args
+    assert inline_await is not None
+    assert _json_text_without_installation_metadata(inline_await.args[0]) == json.loads(original_text)
+    assert inline_await.args[1] is request_state
+    send_text.assert_awaited_once()
+    send_text_await = send_text.await_args
+    assert send_text_await is not None
+    assert _json_text_without_installation_metadata(send_text_await.args[0]) == json.loads(inlined_text)
     assert list(session.pending_requests) == [request_state]
 
 
