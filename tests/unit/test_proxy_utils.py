@@ -21656,8 +21656,14 @@ async def test_submit_http_bridge_request_reinlines_final_text(monkeypatch):
         awaiting_response_created=True,
         event_queue=asyncio.Queue(),
         request_text=original_text,
+        archive_request_id="archive_submit_inline",
     )
-    send_text = AsyncMock()
+    send_request_ids: list[str | None] = []
+
+    async def capture_send_text(_text: str) -> None:
+        send_request_ids.append(get_request_id())
+
+    send_text = AsyncMock(side_effect=capture_send_text)
     upstream = cast(proxy_service.UpstreamResponsesWebSocket, SimpleNamespace(send_text=send_text, close=AsyncMock()))
     session = proxy_service._HTTPBridgeSession(
         key=proxy_service._HTTPBridgeSessionKey("session_header", "sid-submit-inline", None),
@@ -21681,15 +21687,21 @@ async def test_submit_http_bridge_request_reinlines_final_text(monkeypatch):
     monkeypatch.setattr(service, "_acquire_request_state_response_create_admission", AsyncMock())
     monkeypatch.setattr(service, "_start_request_state_api_key_reservation_heartbeat", lambda *args, **kwargs: None)
 
-    await service._submit_http_bridge_request(
-        session,
-        request_state=request_state,
-        text_data=original_text,
-        queue_limit=1,
-    )
+    token = set_request_id("ambient_old_session_request")
+    try:
+        await service._submit_http_bridge_request(
+            session,
+            request_state=request_state,
+            text_data=original_text,
+            queue_limit=1,
+        )
+        assert get_request_id() == "ambient_old_session_request"
+    finally:
+        reset_request_id(token)
 
     inline.assert_awaited_once_with(original_text, request_state)
     send_text.assert_awaited_once_with(inlined_text)
+    assert send_request_ids == ["archive_submit_inline"]
     assert list(session.pending_requests) == [request_state]
 
 

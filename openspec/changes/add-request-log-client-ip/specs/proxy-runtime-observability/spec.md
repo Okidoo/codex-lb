@@ -19,6 +19,12 @@ The proxy MUST persist the resolved edge client IP on `request_logs.client_ip` f
 - **WHEN** an origin instance forwards a Responses request to an HTTP bridge owner instance
 - **THEN** the owner-side request log stores the client IP resolved by the origin instance
 
+#### Scenario: HTTP bridge replay archives under the retried request
+
+- **WHEN** an HTTP bridge request is retried with a new request-log row and archive id
+- **AND** the ambient request id still references the old session request
+- **THEN** the upstream request payload is archived under the retried request's archive id
+
 ### Requirement: Request-log search matches client IP
 
 Request-log search MUST match persisted `client_ip` values.

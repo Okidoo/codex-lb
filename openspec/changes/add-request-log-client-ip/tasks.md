@@ -10,6 +10,7 @@
 - [x] 2.3 Pass client IP through HTTP/SSE/WebSocket Responses request-log paths.
 - [x] 2.4 Preserve original client IP across signed HTTP bridge owner forwarding.
 - [x] 2.5 Include `client_ip` in request-log search.
+- [x] 2.6 Bind HTTP bridge upstream sends to the retried request archive id.
 
 ## 3. API and Frontend
 
@@ -21,4 +22,5 @@
 
 - [x] 4.1 Add repository/API/search regression coverage.
 - [x] 4.2 Add frontend schema and request-details coverage.
-- [x] 4.3 Run backend, frontend, OpenSpec, lint, and type checks.
+- [x] 4.3 Add HTTP bridge replay archive-id regression coverage.
+- [x] 4.4 Run backend, frontend, OpenSpec, lint, and type checks.

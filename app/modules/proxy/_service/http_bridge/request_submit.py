@@ -41,7 +41,7 @@ from app.core.openai.requests import (
 )
 from app.core.resilience.overload import is_local_overload_error_code
 from app.core.types import JsonValue
-from app.core.utils.request_id import ensure_request_id, get_request_id
+from app.core.utils.request_id import ensure_request_id, get_request_id, reset_request_id, set_request_id
 from app.core.utils.sse import format_sse_event, parse_sse_data_json
 from app.modules.api_keys.service import (
     ApiKeyData,
@@ -557,7 +557,11 @@ class _HTTPBridgeRequestSubmitMixin:
                 async with session.pending_lock:
                     session.pending_requests.append(request_state)
                 request_enqueued = True
-                await session.upstream.send_text(text_data)
+                token = set_request_id(request_state.archive_request_id)
+                try:
+                    await session.upstream.send_text(text_data)
+                finally:
+                    reset_request_id(token)
                 session.last_used_at = _service_time().monotonic()
         except ProxyResponseError:
             await self._cleanup_http_bridge_submit_interruption(
