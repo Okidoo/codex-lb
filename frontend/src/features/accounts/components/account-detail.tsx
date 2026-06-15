@@ -23,6 +23,7 @@ export type AccountDetailProps = {
   account: AccountSummary | null;
   showAccountId?: boolean;
   busy: boolean;
+  readOnly?: boolean;
   onPause: (accountId: string) => void;
   onResume: (accountId: string) => void;
   onProbe: (accountId: string) => void;
@@ -44,6 +45,7 @@ export function AccountDetail({
   account,
   showAccountId = false,
   busy,
+  readOnly = false,
   onPause,
   onResume,
   onProbe,
@@ -104,6 +106,7 @@ export function AccountDetail({
           idSuffix={emailSubtitle ? "" : idSuffix}
           blurred={blurred}
           busy={busy}
+          readOnly={readOnly}
           onSetAlias={onSetAlias}
         />
         {emailSubtitle ? (
@@ -129,6 +132,7 @@ export function AccountDetail({
           account={account}
           admin={upstreamProxyAdmin}
           busy={busy}
+          readOnly={readOnly}
           onSave={onProxyBindingSave}
         />
       ) : null}
@@ -137,6 +141,7 @@ export function AccountDetail({
       <AccountActions
         account={account}
         busy={busy}
+        readOnly={readOnly}
         onPause={onPause}
         onResume={onResume}
         onProbe={onProbe}
@@ -159,6 +164,7 @@ type AccountNameFieldProps = {
   idSuffix: string;
   blurred: boolean;
   busy: boolean;
+  readOnly: boolean;
   onSetAlias: (accountId: string, alias: string | null) => Promise<unknown>;
 };
 
@@ -170,6 +176,7 @@ function AccountNameField({
   idSuffix,
   blurred,
   busy,
+  readOnly,
   onSetAlias,
 }: AccountNameFieldProps) {
   const [isEditing, setIsEditing] = useState(false);
@@ -198,7 +205,7 @@ function AccountNameField({
             placeholder="Personal Plus"
             value={aliasDraft}
             autoFocus
-            disabled={busy}
+            disabled={busy || readOnly}
             onChange={(event) => setAliasDraft(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "Enter") {
@@ -215,7 +222,7 @@ function AccountNameField({
             variant="ghost"
             size="icon-sm"
             aria-label="Save alias"
-            disabled={busy}
+            disabled={busy || readOnly}
             onClick={() => void handleSave()}
           >
             <Check className="size-4" />
@@ -258,6 +265,7 @@ function AccountNameField({
         size="icon-xs"
         aria-label="Edit alias"
         title="Use a local label to distinguish accounts that share the same email."
+        disabled={busy || readOnly}
         onClick={() => {
           setAliasDraft(alias ?? "");
           setIsEditing(true);
