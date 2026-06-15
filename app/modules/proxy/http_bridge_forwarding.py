@@ -33,6 +33,7 @@ HTTP_BRIDGE_RESERVATION_MODEL_HEADER = "x-codex-bridge-reservation-model"
 HTTP_BRIDGE_AFFINITY_KIND_HEADER = "x-codex-bridge-affinity-kind"
 HTTP_BRIDGE_AFFINITY_KEY_HEADER = "x-codex-bridge-affinity-key"
 HTTP_BRIDGE_CLIENT_IP_HEADER = "x-codex-bridge-client-ip"
+HTTP_BRIDGE_CLIENT_IP_SIGNATURE_HEADER = "x-codex-bridge-client-ip-signature"
 HTTP_BRIDGE_SIGNATURE_HEADER = "x-codex-bridge-signature"
 
 
@@ -150,6 +151,11 @@ def build_owner_forward_headers(
         forwarded[HTTP_BRIDGE_AFFINITY_KEY_HEADER] = context.original_affinity_key
     if context.client_ip:
         forwarded[HTTP_BRIDGE_CLIENT_IP_HEADER] = context.client_ip
+        forwarded[HTTP_BRIDGE_CLIENT_IP_SIGNATURE_HEADER] = _bridge_forward_signature(
+            payload=payload,
+            context=context,
+            include_client_ip=True,
+        )
     if context.downstream_turn_state:
         forwarded["x-codex-turn-state"] = context.downstream_turn_state
     if context.reservation is not None:
@@ -201,15 +207,21 @@ def parse_forwarded_request(
         reservation=_reservation_from_headers(headers),
     )
     signature = _optional_header(headers.get(HTTP_BRIDGE_SIGNATURE_HEADER))
+    client_ip_signature = _optional_header(headers.get(HTTP_BRIDGE_CLIENT_IP_SIGNATURE_HEADER))
     expected_signature = _bridge_forward_signature(payload=payload, context=context)
     legacy_signature = _bridge_forward_signature(
         payload=payload,
         context=context,
         include_client_ip=False,
     )
-    signature_valid = signature is not None and (
-        hmac.compare_digest(signature, expected_signature)
-        or (legacy_signature is not None and hmac.compare_digest(signature, legacy_signature))
+    primary_signature_valid = signature is not None and hmac.compare_digest(signature, expected_signature)
+    legacy_signature_valid = signature is not None and hmac.compare_digest(signature, legacy_signature)
+    client_ip_signature_valid = client_ip_signature is not None and hmac.compare_digest(
+        client_ip_signature,
+        expected_signature,
+    )
+    signature_valid = primary_signature_valid or (
+        legacy_signature_valid and (client_ip is None or client_ip_signature_valid)
     )
     if not signature_valid:
         return None, ProxyResponseError(
