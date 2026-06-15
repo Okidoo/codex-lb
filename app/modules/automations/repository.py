@@ -15,6 +15,7 @@ from app.core.config.settings import get_settings
 from app.core.utils.time import utcnow
 from app.db.models import (
     Account,
+    AccountStatus,
     AutomationJob,
     AutomationJobAccount,
     AutomationRun,
@@ -1036,10 +1037,12 @@ class AutomationsRepository:
             AutomationRun.status.label("status"),
             AutomationRun.account_id.label("account_id"),
             AutomationRun.started_at.label("started_at"),
+            AutomationRun.finished_at.label("finished_at"),
             AutomationRun.scheduled_for.label("scheduled_for"),
             AutomationRun.cycle_window_end.label("cycle_window_end"),
             AutomationRun.cycle_expected_accounts.label("cycle_expected_accounts"),
             AutomationRun.attempt_count.label("attempt_count"),
+            AutomationJob.include_paused_accounts.label("include_paused_accounts"),
         ).join(AutomationJob, AutomationJob.id == AutomationRun.job_id)
         if conditions:
             filtered_runs_stmt = filtered_runs_stmt.where(and_(*conditions))
@@ -1054,13 +1057,17 @@ class AutomationsRepository:
                 AutomationRun.status.label("status"),
                 AutomationRun.account_id.label("account_id"),
                 AutomationRun.started_at.label("started_at"),
+                AutomationRun.finished_at.label("finished_at"),
                 AutomationRun.scheduled_for.label("scheduled_for"),
                 AutomationRun.cycle_window_end.label("cycle_window_end"),
                 AutomationRun.cycle_expected_accounts.label("cycle_expected_accounts"),
                 AutomationRun.attempt_count.label("attempt_count"),
+                AutomationJob.include_paused_accounts.label("include_paused_accounts"),
+                Account.status.label("account_status"),
             )
             .join(AutomationJob, AutomationJob.id == AutomationRun.job_id)
             .join(candidate_cycles, candidate_cycles.c.cycle_key == AutomationRun.cycle_key)
+            .outerjoin(Account, Account.id == AutomationRun.account_id)
         )
         cycle_runs = cycle_runs_stmt.subquery()
 
@@ -1082,8 +1089,28 @@ class AutomationsRepository:
             cycle_runs.c.trigger == "scheduled",
             cycle_runs.c.attempt_count > 0,
         )
+        account_is_eligible = and_(
+            cycle_runs.c.account_id.is_not(None),
+            or_(
+                cycle_runs.c.status != "running",
+                cycle_runs.c.account_status == AccountStatus.ACTIVE,
+                and_(
+                    cycle_runs.c.account_status == AccountStatus.PAUSED,
+                    cycle_runs.c.include_paused_accounts.is_(True),
+                ),
+            ),
+        )
+        hidden_manual_placeholder = and_(
+            cycle_runs.c.trigger == "manual",
+            cycle_runs.c.status == "running",
+            cycle_runs.c.finished_at.is_(None),
+            cycle_runs.c.attempt_count == 0,
+            cycle_runs.c.started_at <= cycle_runs.c.scheduled_for,
+            ~account_is_eligible,
+        )
+        visible_countable_outcome = and_(countable_outcome, ~hidden_manual_placeholder)
         completed_countable_run = case(
-            (and_(cycle_runs.c.status != "running", countable_outcome), 1),
+            (and_(cycle_runs.c.status != "running", visible_countable_outcome), 1),
             else_=0,
         )
 
@@ -1097,17 +1124,20 @@ class AutomationsRepository:
                 "non_manual_cycle_started_at"
             ),
             func.sum(completed_countable_run).label("completed_accounts"),
-            func.sum(case((and_(countable_outcome, cycle_runs.c.status == "success"), 1), else_=0)).label(
+            func.sum(case((and_(visible_countable_outcome, cycle_runs.c.status == "success"), 1), else_=0)).label(
                 "success_count"
             ),
-            func.sum(case((and_(countable_outcome, cycle_runs.c.status == "failed"), 1), else_=0)).label(
+            func.sum(case((and_(visible_countable_outcome, cycle_runs.c.status == "failed"), 1), else_=0)).label(
                 "failed_count"
             ),
-            func.sum(case((and_(countable_outcome, cycle_runs.c.status == "partial"), 1), else_=0)).label(
+            func.sum(case((and_(visible_countable_outcome, cycle_runs.c.status == "partial"), 1), else_=0)).label(
                 "partial_count"
             ),
-            func.sum(case((cycle_runs.c.status == "running", 1), else_=0)).label("running_count"),
-            func.max(func.coalesce(cycle_runs.c.cycle_expected_accounts, 0)).label("expected_accounts"),
+            func.sum(case((and_(~hidden_manual_placeholder, cycle_runs.c.status == "running"), 1), else_=0)).label(
+                "running_count"
+            ),
+            func.sum(case((visible_countable_outcome, 1), else_=0)).label("visible_accounts"),
+            func.max(func.coalesce(cycle_runs.c.cycle_expected_accounts, 0)).label("snapshot_expected_accounts"),
             func.max(func.coalesce(cycle_runs.c.cycle_window_end, cycle_runs.c.scheduled_for)).label("window_end"),
         ).group_by(cycle_runs.c.cycle_key)
         cycle_agg = cycle_agg_stmt.subquery()
@@ -1126,7 +1156,10 @@ class AutomationsRepository:
                 cycle_agg.c.failed_count,
                 cycle_agg.c.partial_count,
                 cycle_agg.c.running_count,
-                cycle_agg.c.expected_accounts,
+                case(
+                    (cycle_agg.c.has_manual_trigger == 1, cycle_agg.c.visible_accounts),
+                    else_=cycle_agg.c.snapshot_expected_accounts,
+                ).label("expected_accounts"),
                 cycle_agg.c.window_end,
             )
             .join(cycle_agg, cycle_agg.c.cycle_key == ranked.c.cycle_key)
@@ -1235,29 +1268,39 @@ class AutomationsRepository:
                 AutomationRun.status.label("status"),
                 AutomationRun.account_id.label("account_id"),
                 AutomationRun.started_at.label("started_at"),
+                AutomationRun.finished_at.label("finished_at"),
                 AutomationRun.scheduled_for.label("scheduled_for"),
                 AutomationRun.cycle_window_end.label("cycle_window_end"),
                 AutomationRun.cycle_expected_accounts.label("cycle_expected_accounts"),
                 AutomationRun.trigger.label("trigger"),
                 AutomationRun.attempt_count.label("attempt_count"),
+                AutomationJob.include_paused_accounts.label("include_paused_accounts"),
             ).join(AutomationJob, AutomationJob.id == AutomationRun.job_id)
             if conditions:
                 filtered_runs_stmt = filtered_runs_stmt.where(and_(*conditions))
             filtered_runs = filtered_runs_stmt.subquery()
             candidate_cycles = select(filtered_runs.c.cycle_key).distinct().subquery()
 
-            cycle_runs_stmt = select(
-                AutomationRun.id.label("run_id"),
-                AutomationRun.cycle_key.label("cycle_key"),
-                AutomationRun.status.label("status"),
-                AutomationRun.account_id.label("account_id"),
-                AutomationRun.started_at.label("started_at"),
-                AutomationRun.scheduled_for.label("scheduled_for"),
-                AutomationRun.cycle_window_end.label("cycle_window_end"),
-                AutomationRun.cycle_expected_accounts.label("cycle_expected_accounts"),
-                AutomationRun.trigger.label("trigger"),
-                AutomationRun.attempt_count.label("attempt_count"),
-            ).join(candidate_cycles, candidate_cycles.c.cycle_key == AutomationRun.cycle_key)
+            cycle_runs_stmt = (
+                select(
+                    AutomationRun.id.label("run_id"),
+                    AutomationRun.cycle_key.label("cycle_key"),
+                    AutomationRun.status.label("status"),
+                    AutomationRun.account_id.label("account_id"),
+                    AutomationRun.started_at.label("started_at"),
+                    AutomationRun.finished_at.label("finished_at"),
+                    AutomationRun.scheduled_for.label("scheduled_for"),
+                    AutomationRun.cycle_window_end.label("cycle_window_end"),
+                    AutomationRun.cycle_expected_accounts.label("cycle_expected_accounts"),
+                    AutomationRun.trigger.label("trigger"),
+                    AutomationRun.attempt_count.label("attempt_count"),
+                    AutomationJob.include_paused_accounts.label("include_paused_accounts"),
+                    Account.status.label("account_status"),
+                )
+                .join(AutomationJob, AutomationJob.id == AutomationRun.job_id)
+                .join(candidate_cycles, candidate_cycles.c.cycle_key == AutomationRun.cycle_key)
+                .outerjoin(Account, Account.id == AutomationRun.account_id)
+            )
             cycle_runs = cycle_runs_stmt.subquery()
 
             ranked_stmt = select(
@@ -1278,25 +1321,49 @@ class AutomationsRepository:
                 cycle_runs.c.trigger == "scheduled",
                 cycle_runs.c.attempt_count > 0,
             )
+            account_is_eligible = and_(
+                cycle_runs.c.account_id.is_not(None),
+                or_(
+                    cycle_runs.c.status != "running",
+                    cycle_runs.c.account_status == AccountStatus.ACTIVE,
+                    and_(
+                        cycle_runs.c.account_status == AccountStatus.PAUSED,
+                        cycle_runs.c.include_paused_accounts.is_(True),
+                    ),
+                ),
+            )
+            hidden_manual_placeholder = and_(
+                cycle_runs.c.trigger == "manual",
+                cycle_runs.c.status == "running",
+                cycle_runs.c.finished_at.is_(None),
+                cycle_runs.c.attempt_count == 0,
+                cycle_runs.c.started_at <= cycle_runs.c.scheduled_for,
+                ~account_is_eligible,
+            )
+            visible_countable_outcome = and_(countable_outcome, ~hidden_manual_placeholder)
             completed_countable_run = case(
-                (and_(cycle_runs.c.status != "running", countable_outcome), 1),
+                (and_(cycle_runs.c.status != "running", visible_countable_outcome), 1),
                 else_=0,
             )
 
             cycle_agg_stmt = select(
                 cycle_runs.c.cycle_key.label("cycle_key"),
+                func.max(case((cycle_runs.c.trigger == "manual", 1), else_=0)).label("has_manual_trigger"),
                 func.sum(completed_countable_run).label("completed_accounts"),
-                func.sum(case((and_(countable_outcome, cycle_runs.c.status == "success"), 1), else_=0)).label(
+                func.sum(case((and_(visible_countable_outcome, cycle_runs.c.status == "success"), 1), else_=0)).label(
                     "success_count"
                 ),
-                func.sum(case((and_(countable_outcome, cycle_runs.c.status == "failed"), 1), else_=0)).label(
+                func.sum(case((and_(visible_countable_outcome, cycle_runs.c.status == "failed"), 1), else_=0)).label(
                     "failed_count"
                 ),
-                func.sum(case((and_(countable_outcome, cycle_runs.c.status == "partial"), 1), else_=0)).label(
+                func.sum(case((and_(visible_countable_outcome, cycle_runs.c.status == "partial"), 1), else_=0)).label(
                     "partial_count"
                 ),
-                func.sum(case((cycle_runs.c.status == "running", 1), else_=0)).label("running_count"),
-                func.max(func.coalesce(cycle_runs.c.cycle_expected_accounts, 0)).label("expected_accounts"),
+                func.sum(case((and_(~hidden_manual_placeholder, cycle_runs.c.status == "running"), 1), else_=0)).label(
+                    "running_count"
+                ),
+                func.sum(case((visible_countable_outcome, 1), else_=0)).label("visible_accounts"),
+                func.max(func.coalesce(cycle_runs.c.cycle_expected_accounts, 0)).label("snapshot_expected_accounts"),
                 func.max(func.coalesce(cycle_runs.c.cycle_window_end, cycle_runs.c.scheduled_for)).label("window_end"),
             ).group_by(cycle_runs.c.cycle_key)
             cycle_agg = cycle_agg_stmt.subquery()
@@ -1310,7 +1377,10 @@ class AutomationsRepository:
                     cycle_agg.c.failed_count,
                     cycle_agg.c.partial_count,
                     cycle_agg.c.running_count,
-                    cycle_agg.c.expected_accounts,
+                    case(
+                        (cycle_agg.c.has_manual_trigger == 1, cycle_agg.c.visible_accounts),
+                        else_=cycle_agg.c.snapshot_expected_accounts,
+                    ).label("expected_accounts"),
                     cycle_agg.c.window_end,
                 )
                 .join(cycle_agg, cycle_agg.c.cycle_key == ranked.c.cycle_key)

@@ -838,6 +838,117 @@ async def test_automations_run_now_reactivates_elapsed_rate_limited_account(asyn
 
 
 @pytest.mark.asyncio
+async def test_grouped_manual_runs_hide_ineligible_unclaimed_placeholder_from_status_filters(async_client):
+    accounts = await _create_accounts("auto-manual-hidden-a", "auto-manual-hidden-b")
+    now = utcnow().replace(second=0, microsecond=0)
+
+    async with SessionLocal() as session:
+        automations_repository = AutomationsRepository(session)
+        job = await automations_repository.create_job(
+            name="Hidden manual placeholder",
+            enabled=False,
+            include_paused_accounts=False,
+            schedule_type="daily",
+            schedule_time="05:00",
+            schedule_timezone="UTC",
+            schedule_days=["mon", "tue", "wed", "thu", "fri", "sat", "sun"],
+            schedule_threshold_minutes=0,
+            model="gpt-5.3-codex",
+            reasoning_effort=None,
+            prompt="ping",
+            account_ids=[accounts[0].id, accounts[1].id],
+        )
+        cycle_id = "hidden-placeholder"
+        cycle = await automations_repository.create_run_cycle(
+            cycle_key=f"manual:{job.id}:{cycle_id}",
+            job_id=job.id,
+            trigger="manual",
+            cycle_expected_accounts=2,
+            cycle_window_end=now + timedelta(minutes=5),
+            accounts=[
+                (accounts[0].id, now),
+                (accounts[1].id, now),
+            ],
+        )
+        success_run = await automations_repository.claim_run(
+            job_id=job.id,
+            trigger="manual",
+            slot_key=_manual_slot_key(job.id, cycle_id, accounts[0].id),
+            cycle_key=cycle.cycle_key,
+            cycle_expected_accounts=cycle.cycle_expected_accounts,
+            cycle_window_end=cycle.cycle_window_end,
+            scheduled_for=now,
+            started_at=now,
+            account_id=accounts[0].id,
+        )
+        hidden_placeholder = await automations_repository.claim_run(
+            job_id=job.id,
+            trigger="manual",
+            slot_key=_manual_slot_key(job.id, cycle_id, accounts[1].id),
+            cycle_key=cycle.cycle_key,
+            cycle_expected_accounts=cycle.cycle_expected_accounts,
+            cycle_window_end=cycle.cycle_window_end,
+            scheduled_for=now,
+            started_at=now,
+            account_id=accounts[1].id,
+        )
+        assert success_run is not None
+        assert hidden_placeholder is not None
+        await automations_repository.complete_run(
+            success_run.id,
+            status="success",
+            finished_at=now + timedelta(seconds=5),
+            account_id=accounts[0].id,
+            error_code=None,
+            error_message=None,
+            attempt_count=1,
+        )
+
+    await _set_account_status(accounts[1].id, AccountStatus.RATE_LIMITED)
+
+    grouped_response = await async_client.get(
+        "/api/automations/runs",
+        params={"automationId": job.id, "trigger": "manual", "limit": 25, "offset": 0},
+    )
+    assert grouped_response.status_code == 200
+    grouped_payload = grouped_response.json()
+    assert grouped_payload["total"] == 1
+    grouped_item = grouped_payload["items"][0]
+    assert grouped_item["effectiveStatus"] == "success"
+    assert grouped_item["totalAccounts"] == 1
+    assert grouped_item["completedAccounts"] == 1
+    assert grouped_item["pendingAccounts"] == 0
+
+    running_response = await async_client.get(
+        "/api/automations/runs",
+        params={
+            "automationId": job.id,
+            "trigger": "manual",
+            "status": "running",
+            "limit": 25,
+            "offset": 0,
+        },
+    )
+    assert running_response.status_code == 200
+    assert running_response.json()["total"] == 0
+
+    success_response = await async_client.get(
+        "/api/automations/runs",
+        params={
+            "automationId": job.id,
+            "trigger": "manual",
+            "status": "success",
+            "limit": 25,
+            "offset": 0,
+        },
+    )
+    assert success_response.status_code == 200
+    success_payload = success_response.json()
+    assert success_payload["total"] == 1
+    assert success_payload["items"][0]["effectiveStatus"] == "success"
+
+
+@pytest.mark.asyncio
 async def test_manual_run_due_jobs_claim_each_run_once_under_race(async_client, monkeypatch):
     account = (await _create_accounts("auto-manual-race"))[0]
     first_call_started = asyncio.Event()

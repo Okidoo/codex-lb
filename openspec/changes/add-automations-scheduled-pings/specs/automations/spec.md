@@ -183,6 +183,13 @@ The system MUST persist run history rows and expose them via dashboard APIs so o
 - **THEN** run details omit that account from pending per-account rows
 - **AND** the cycle total and pending counts do not include that account
 
+#### Scenario: Run history status filters use visible manual cycle accounts
+
+- **GIVEN** a manual cycle contains a completed per-account run and an ineligible unclaimed placeholder
+- **WHEN** an admin filters grouped run history by status
+- **THEN** the status filter uses the cycle status computed from visible per-account rows
+- **AND** it does not match the cycle as running because of the hidden placeholder
+
 ### Requirement: Automation pings do not mutate durable user continuity
 
 Automation ping execution MUST avoid creating or mutating durable sticky-thread/codex-session continuity used by end-user traffic.
