@@ -18,6 +18,7 @@ const ACCOUNT_LIST_COLUMNS = "minmax(13rem,1.3fr) 7.75rem 5rem minmax(14rem,1.2f
 
 type AccountListProps = {
   accounts: AccountSummary[];
+  readOnly?: boolean;
   onAction?: (account: AccountSummary, action: AccountAction) => void;
 };
 
@@ -237,7 +238,7 @@ function QuotaMeter({ percent }: { percent: number | null }) {
   );
 }
 
-export function AccountList({ accounts, onAction }: AccountListProps) {
+export function AccountList({ accounts, readOnly = false, onAction }: AccountListProps) {
   const blurred = usePrivacyStore((s) => s.blurred);
   const [sort, setSort] = useState<AccountListSort>(null);
   const sortedAccounts = useMemo(() => {
@@ -279,7 +280,7 @@ export function AccountList({ accounts, onAction }: AccountListProps) {
         style={{ maxHeight: `${ACCOUNT_LIST_VISIBLE_ROWS * ACCOUNT_LIST_ROW_HEIGHT_REM}rem` }}
       >
         <div
-          className="grid gap-3 bg-muted/35 px-3 py-2 text-[11px] font-medium uppercase tracking-wider text-muted-foreground"
+          className="sticky top-0 z-10 grid gap-3 border-b bg-card/95 px-3 py-2 text-[11px] font-medium uppercase tracking-wider text-muted-foreground backdrop-blur supports-[backdrop-filter]:bg-card/85"
           style={{ gridTemplateColumns: ACCOUNT_LIST_COLUMNS }}
         >
           {SORTABLE_HEADERS.map((header) => (
@@ -359,6 +360,7 @@ export function AccountList({ accounts, onAction }: AccountListProps) {
                   )}
                   aria-label={`${account.limitWarmupEnabled ? "Disable" : "Enable"} limit warm-up for ${title}`}
                   title="Limit warm-up"
+                  disabled={readOnly}
                   onClick={() => onAction?.(account, "warmup-toggle")}
                 >
                   <Zap className="h-3.5 w-3.5" aria-hidden="true" />
@@ -371,6 +373,7 @@ export function AccountList({ accounts, onAction }: AccountListProps) {
                     className="h-7 w-7 rounded-md p-0 text-emerald-600 hover:bg-emerald-500/10 hover:text-emerald-700 dark:text-emerald-400 dark:hover:text-emerald-300"
                     aria-label={`Resume ${title}`}
                     title="Resume"
+                    disabled={readOnly}
                     onClick={() => onAction?.(account, "resume")}
                   >
                     <Play className="h-3.5 w-3.5" aria-hidden="true" />
@@ -384,6 +387,7 @@ export function AccountList({ accounts, onAction }: AccountListProps) {
                     className="h-7 w-7 rounded-md p-0 text-amber-600 hover:bg-amber-500/10 hover:text-amber-700 dark:text-amber-400 dark:hover:text-amber-300"
                     aria-label={`Re-authenticate ${title}`}
                     title="Re-authenticate"
+                    disabled={readOnly}
                     onClick={() => onAction?.(account, "reauth")}
                   >
                     <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />

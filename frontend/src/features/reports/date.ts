@@ -5,6 +5,10 @@ function isValidTimeZone(timeZone: string | undefined): timeZone is string {
     return false;
   }
 
+  if (typeof Intl.supportedValuesOf === "function") {
+    return timeZone === "UTC" || Intl.supportedValuesOf("timeZone").includes(timeZone);
+  }
+
   try {
     new Intl.DateTimeFormat(undefined, { timeZone });
     return true;

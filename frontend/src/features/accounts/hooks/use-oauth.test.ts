@@ -61,7 +61,9 @@ describe("useOauth", () => {
       intervalSeconds: 5,
       expiresInSeconds: 600,
     });
-    completeOauthMock.mockResolvedValue({ status: "pending" });
+    completeOauthMock
+      .mockResolvedValueOnce({ status: "pending" })
+      .mockResolvedValueOnce({ status: "success" });
 
     const { result } = renderUseOauth();
 
@@ -161,6 +163,7 @@ describe("useOauth", () => {
       status: "success",
       errorMessage: null,
     });
+    completeOauthMock.mockResolvedValue({ status: "success" });
 
     const { queryClient, result } = renderUseOauth();
     const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
@@ -217,6 +220,51 @@ describe("useOauth", () => {
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["accounts", "trends"] });
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["dashboard", "overview"] });
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["dashboard", "projections"] });
+  });
+
+  it("stops polling when browser OAuth completion returns an error", async () => {
+    vi.useFakeTimers();
+    try {
+      startOauthMock.mockResolvedValue({
+        flowId: "flow-browser",
+        method: "browser",
+        authorizationUrl: "https://auth.example.com/authorize",
+        callbackUrl: "http://127.0.0.1:1455/auth/callback",
+        verificationUrl: null,
+        userCode: null,
+        deviceAuthId: null,
+        intervalSeconds: null,
+        expiresInSeconds: null,
+      });
+      getOauthStatusMock.mockResolvedValue({
+        status: "success",
+        errorMessage: null,
+      });
+      completeOauthMock.mockResolvedValue({
+        status: "error",
+        errorMessage: "OAuth completion failed",
+      });
+
+      const { result } = renderUseOauth();
+
+      await act(async () => {
+        await result.current.start("browser");
+      });
+      await act(async () => {
+        await result.current.poll();
+      });
+
+      expect(result.current.state.status).toBe("error");
+      expect(completeOauthMock).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        vi.advanceTimersByTime(2_000);
+      });
+
+      expect(completeOauthMock).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("updates state to success after a successful manual callback", async () => {
@@ -287,5 +335,83 @@ describe("useOauth", () => {
 
     expect(result.current.state.status).toBe("error");
     expect(result.current.state.errorMessage).toBe("Invalid OAuth callback: state mismatch or missing code.");
+  });
+
+  it("stops browser polling and countdown after a failed manual callback", async () => {
+    vi.useFakeTimers();
+    try {
+      startOauthMock.mockResolvedValue({
+        flowId: "flow-browser",
+        method: "browser",
+        authorizationUrl: "https://auth.example.com/authorize",
+        callbackUrl: "http://127.0.0.1:1455/auth/callback",
+        verificationUrl: null,
+        userCode: null,
+        deviceAuthId: null,
+        intervalSeconds: null,
+        expiresInSeconds: 60,
+      });
+      submitManualOauthCallbackMock.mockResolvedValue({
+        status: "error",
+        errorMessage: "Invalid OAuth callback: state mismatch or missing code.",
+      });
+
+      const { result } = renderUseOauth();
+
+      await act(async () => {
+        await result.current.start("browser");
+      });
+      await act(async () => {
+        await result.current.manualCallback("http://localhost:1455/auth/callback?code=bad&state=wrong");
+      });
+
+      expect(result.current.state.status).toBe("error");
+      expect(result.current.state.expiresInSeconds).toBe(60);
+
+      await act(async () => {
+        vi.advanceTimersByTime(2_000);
+      });
+
+      expect(getOauthStatusMock).not.toHaveBeenCalled();
+      expect(result.current.state.expiresInSeconds).toBe(60);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops the countdown timer when OAuth expires", async () => {
+    vi.useFakeTimers();
+    try {
+      startOauthMock.mockResolvedValue({
+        flowId: "flow-browser",
+        method: "browser",
+        authorizationUrl: "https://auth.example.com/authorize",
+        callbackUrl: "http://127.0.0.1:1455/auth/callback",
+        verificationUrl: null,
+        userCode: null,
+        deviceAuthId: null,
+        intervalSeconds: null,
+        expiresInSeconds: 1,
+      });
+
+      const { result } = renderUseOauth();
+
+      await act(async () => {
+        await result.current.start("browser");
+      });
+      expect(result.current.state.expiresInSeconds).toBe(1);
+
+      await act(async () => {
+        vi.advanceTimersByTime(1_000);
+      });
+      expect(result.current.state.expiresInSeconds).toBe(0);
+
+      await act(async () => {
+        vi.advanceTimersByTime(5_000);
+      });
+      expect(result.current.state.expiresInSeconds).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
