@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -93,9 +94,21 @@ Validated candidate: {sha}
 
 
 def run_guard(project_root: Path, repo_root: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    github_env_keys = (
+        "BETA_RELEASE_PR_BODY",
+        "GITHUB_EVENT_NAME",
+        "GITHUB_EVENT_PATH",
+        "GITHUB_HEAD_REF",
+        "GITHUB_REPOSITORY",
+    )
+    for key in github_env_keys:
+        env.pop(key, None)
+
     return subprocess.run(
         [sys.executable, "-m", "scripts.guard_beta_release", "--root", str(repo_root), *args],
         cwd=project_root,
+        env=env,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
