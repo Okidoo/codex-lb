@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.21.0](https://github.com/Soju06/codex-lb/compare/v1.20.1...v1.21.0) (2026-06-26)
+
+
+### Features
+
+* expose upstream transport observability ([#1096](https://github.com/Soju06/codex-lb/issues/1096)) ([cd01609](https://github.com/Soju06/codex-lb/commit/cd01609b3d85a3661d059820d12552edf1679d77))
+* **proxy:** repair account-bound egress routing ([#875](https://github.com/Soju06/codex-lb/issues/875)) ([1bee4ec](https://github.com/Soju06/codex-lb/commit/1bee4ec32413b41a46ea54e9be7eb723b3e3d5e6))
+* smart HTTP→upstream transport routing (sticky vs single-shot) ([#1093](https://github.com/Soju06/codex-lb/issues/1093)) ([2e124df](https://github.com/Soju06/codex-lb/commit/2e124df8fb230fec7528d473fdd71bfd2e7e6388))
+
+
+### Bug Fixes
+
+* **ci:** ignore stale and resolved Codex inline findings ([#981](https://github.com/Soju06/codex-lb/issues/981)) ([384e9b5](https://github.com/Soju06/codex-lb/commit/384e9b5aae16dbf59f28eb94ddec3ad640db0f34))
+* **dashboard:** correct weekly credits pace display ([#955](https://github.com/Soju06/codex-lb/issues/955)) ([30b3631](https://github.com/Soju06/codex-lb/commit/30b36317e6332b587a3a9202b5f0ed8248bf1018))
+* **models:** hide unsupported API models ([#887](https://github.com/Soju06/codex-lb/issues/887)) ([c5714ca](https://github.com/Soju06/codex-lb/commit/c5714ca90acabb6fc54d24d1da52cd749cf4e269))
+* **proxy:** avoid shielded-future log on startup probe timeout ([#1076](https://github.com/Soju06/codex-lb/issues/1076)) ([21c03ec](https://github.com/Soju06/codex-lb/commit/21c03ec5942032310a87d92af2539475b98755e7)), closes [#976](https://github.com/Soju06/codex-lb/issues/976)
+* **proxy:** normalize non-native upstream requests to Codex CLI fingerprint ([#1089](https://github.com/Soju06/codex-lb/issues/1089)) ([8616e48](https://github.com/Soju06/codex-lb/commit/8616e48116ecb56947554d0e888bfeebd4ab0295))
+* **quota-planner:** normalize decision datetimes for persistence ([#1034](https://github.com/Soju06/codex-lb/issues/1034)) ([9f5ae7c](https://github.com/Soju06/codex-lb/commit/9f5ae7c2d92421081c427bb3bcff07355934f30e))
+
 ## [1.20.1](https://github.com/Soju06/codex-lb/compare/v1.20.0...v1.20.1) (2026-06-18)
 
 
