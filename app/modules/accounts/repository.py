@@ -23,6 +23,7 @@ from app.db.models import (
     RequestLog,
     StickySession,
     UsageHistory,
+    ZaiCredential,
 )
 from app.db.session import sqlite_writer_section
 from app.modules.usage.additional_quota_keys import normalize_additional_quota_routing_policy_overrides
@@ -66,6 +67,34 @@ class AccountsRepository:
             stmt = stmt.execution_options(populate_existing=True)
         result = await self._session.execute(stmt)
         return list(result.scalars().all())
+
+    async def get_zai_credential(self, account_id: str) -> ZaiCredential | None:
+        return await self._session.get(ZaiCredential, account_id)
+
+    async def save_zai_account(self, account: Account, credential: ZaiCredential) -> Account:
+        async with sqlite_writer_section():
+            existing = await self._session.get(Account, account.id)
+            if existing is None:
+                self._session.add(account)
+                saved = account
+            else:
+                _apply_account_updates(existing, account)
+                existing.provider = account.provider
+                existing.alias = account.alias
+                saved = existing
+
+            existing_credential = await self._session.get(ZaiCredential, account.id)
+            if existing_credential is None:
+                self._session.add(credential)
+            else:
+                existing_credential.api_key_encrypted = credential.api_key_encrypted
+                existing_credential.api_key_hash = credential.api_key_hash
+                existing_credential.base_url = credential.base_url
+                existing_credential.updated_at = utcnow()
+
+            await self._session.commit()
+            await self._session.refresh(saved)
+            return saved
 
     async def list_request_usage_summary_by_account(
         self,

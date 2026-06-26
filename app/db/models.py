@@ -47,6 +47,11 @@ class AccountStatus(str, Enum):
     DEACTIVATED = "deactivated"
 
 
+class AccountProvider(str, Enum):
+    OPENAI = "openai"
+    ZAI = "zai"
+
+
 class AccountRoutingPolicy(str, Enum):
     NORMAL = "normal"
     BURN_FIRST = "burn_first"
@@ -68,6 +73,12 @@ class Account(Base):
     __tablename__ = "accounts"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
+    provider: Mapped[str] = mapped_column(
+        String,
+        default=AccountProvider.OPENAI.value,
+        server_default=text("'openai'"),
+        nullable=False,
+    )
     chatgpt_account_id: Mapped[str | None] = mapped_column(String, nullable=True)
     codex_installation_id: Mapped[str] = mapped_column(
         String(36),
@@ -140,6 +151,34 @@ class Account(Base):
         cascade="all, delete-orphan",
         uselist=False,
     )
+    zai_credential: Mapped["ZaiCredential | None"] = relationship(
+        "ZaiCredential",
+        back_populates="account",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
+
+
+class ZaiCredential(Base):
+    __tablename__ = "zai_credentials"
+
+    account_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("accounts.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    api_key_encrypted: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    api_key_hash: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    base_url: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    account: Mapped["Account"] = relationship("Account", back_populates="zai_credential")
 
 
 class UsageHistory(Base):

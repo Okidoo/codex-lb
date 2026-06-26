@@ -18,7 +18,7 @@ from app.core.crypto import TokenEncryptor
 from app.core.plan_types import coerce_account_plan_type
 from app.core.upstream_proxy import UpstreamProxyRouteError, resolve_upstream_route
 from app.core.utils.time import utcnow
-from app.db.models import Account, AccountStatus
+from app.db.models import Account, AccountProvider, AccountStatus
 from app.db.session import get_background_session
 from app.modules.proxy.account_cache import get_account_selection_cache, mark_account_routing_unavailable
 
@@ -169,6 +169,8 @@ class AuthManager:
         self._refresh_repo_factory = refresh_repo_factory
 
     async def ensure_fresh(self, account: Account, *, force: bool = False) -> Account:
+        if not _is_openai_account(account):
+            return account
         if force or should_refresh(account.last_refresh):
             account = await _REFRESH_SINGLEFLIGHT.run(
                 _refresh_singleflight_key(self._encryptor, account),
@@ -200,6 +202,8 @@ class AuthManager:
             return await owned.refresh_account(account)
 
     async def refresh_account(self, account: Account) -> Account:
+        if not _is_openai_account(account):
+            return account
         refresh_token = self._encryptor.decrypt(account.refresh_token_encrypted)
         try:
             result = await self._refresh_tokens(refresh_token, account=account)
@@ -388,6 +392,12 @@ def _clean_optional(value: str | None) -> str | None:
         return None
     cleaned = value.strip()
     return cleaned or None
+
+
+def _is_openai_account(account: Account) -> bool:
+    return (getattr(account, "provider", AccountProvider.OPENAI.value) or AccountProvider.OPENAI.value) == (
+        AccountProvider.OPENAI.value
+    )
 
 
 async def _call_with_supported_optional_kwargs(

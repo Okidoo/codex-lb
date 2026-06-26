@@ -15,6 +15,7 @@ import anyio
 from app.core.balancer.types import UpstreamError
 from app.core.clients.proxy_websocket import UpstreamResponsesWebSocket
 from app.core.openai.models import OpenAIEvent
+from app.core.openai.requests import ResponsesRequest
 from app.core.types import JsonValue
 from app.core.upstream_proxy import ResolvedUpstreamRoute
 from app.db.models import Account
@@ -575,6 +576,7 @@ class _PreparedWebSocketRequest:
     text_data: str
     request_state: _WebSocketRequestState
     affinity_policy: _AffinityPolicy
+    responses_payload: ResponsesRequest | None = None
 
 
 @dataclass(frozen=True, slots=True)

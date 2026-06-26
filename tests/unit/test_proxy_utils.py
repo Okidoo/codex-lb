@@ -1719,6 +1719,25 @@ async def test_stream_http_bridge_or_retry_bypasses_bridge_for_input_image(monke
     assert text_output == ["data: bridge\n\n"]
     assert calls[-1] == ("bridge", None, None, None, None)
 
+    calls.clear()
+    glm_payload = ResponsesRequest.model_validate({"model": "glm-5.2", "instructions": "hi", "input": "hello"})
+    glm_output = [
+        line
+        async for line in service._stream_http_bridge_or_retry(
+            payload=glm_payload,
+            headers={},
+            codex_session_affinity=False,
+            propagate_http_errors=False,
+            openai_cache_affinity=False,
+            api_key=None,
+            api_key_reservation=None,
+            suppress_text_done_events=False,
+        )
+    ]
+
+    assert glm_output == ["data: retry\n\n"]
+    assert calls == [("retry", glm_payload, None, 180.0, None)]
+
     monkeypatch.setattr(
         proxy_service,
         "_http_bridge_runtime_config",

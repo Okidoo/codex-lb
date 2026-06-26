@@ -13,7 +13,7 @@ import app.core.clients.model_fetcher as model_fetcher_module
 import app.core.openai.model_refresh_scheduler as scheduler_module
 from app.core.openai.model_registry import ReasoningLevel, UpstreamModel
 from app.core.upstream_proxy import ResolvedProxyEndpoint, ResolvedUpstreamRoute
-from app.db.models import Account, AccountStatus
+from app.db.models import Account, AccountProvider, AccountStatus
 
 pytestmark = pytest.mark.unit
 
@@ -30,6 +30,17 @@ def _account(account_id: str = "account-1") -> Account:
         last_refresh=datetime(2026, 1, 1),
         status=AccountStatus.ACTIVE,
     )
+
+
+def test_group_by_plan_excludes_zai_accounts() -> None:
+    openai_account = _account("openai")
+    zai_account = _account("zai")
+    zai_account.provider = AccountProvider.ZAI.value
+    zai_account.plan_type = "zai"
+
+    grouped = scheduler_module._group_by_plan([openai_account, zai_account])
+
+    assert grouped == {"team": [openai_account]}
 
 
 def _model(slug: str) -> UpstreamModel:

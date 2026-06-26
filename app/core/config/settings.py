@@ -154,6 +154,7 @@ class Settings(BaseSettings):
     database_sqlite_startup_check_mode: Literal["quick", "full", "off"] = "quick"
     database_alembic_auto_remap_enabled: bool = True
     upstream_base_url: str = "https://chatgpt.com/backend-api"
+    zai_base_url: str = "https://api.z.ai/api/coding/paas/v4"
     upstream_stream_transport: Literal["http", "websocket", "auto"] = "auto"
     http_downstream_transport_policy: Literal["smart", "always_http", "always_websocket", "pinned"] = "smart"
     upstream_connect_timeout_seconds: float = 8.0

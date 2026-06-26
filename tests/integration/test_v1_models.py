@@ -240,6 +240,22 @@ async def test_backend_codex_models_returns_format1(async_client):
 
 
 @pytest.mark.asyncio
+async def test_model_endpoints_include_local_glm_models_after_registry_refresh(async_client):
+    registry = get_model_registry()
+    await registry.update({"plus": [_make_upstream_model("gpt-5.2")]})
+
+    resp_codex = await async_client.get("/backend-api/codex/models")
+    assert resp_codex.status_code == 200
+    codex_slugs = {model["slug"] for model in resp_codex.json()["models"]}
+    assert {"glm-4.7", "glm-5", "glm-5-turbo", "glm-5.1", "glm-5.2"}.issubset(codex_slugs)
+
+    resp_v1 = await async_client.get("/v1/models")
+    assert resp_v1.status_code == 200
+    v1_ids = {model["id"] for model in resp_v1.json()["data"]}
+    assert {"glm-4.7", "glm-5", "glm-5-turbo", "glm-5.1", "glm-5.2"}.issubset(v1_ids)
+
+
+@pytest.mark.asyncio
 async def test_backend_codex_models_data_keeps_only_list_visible_models(async_client):
     registry = get_model_registry()
     models = [

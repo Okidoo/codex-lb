@@ -39,6 +39,7 @@ from app.core.errors import (
     PREVIOUS_RESPONSE_STALE_MESSAGE as PREVIOUS_RESPONSE_STALE_MESSAGE,
 )
 from app.core.errors import (
+    openai_error,
     response_failed_event,
 )
 from app.core.openai.parsing import parse_sse_event
@@ -49,8 +50,10 @@ from app.core.upstream_proxy import ResolvedUpstreamRoute, UpstreamProxyRouteErr
 from app.core.utils.sse import CODEX_KEEPALIVE_FRAME as CODEX_KEEPALIVE_FRAME  # noqa: F401
 from app.core.utils.sse import format_sse_event, parse_sse_data_json
 from app.core.utils.time import utcnow as utcnow
+from app.core.zai.adapter import stream_zai_responses
 from app.db.models import (
     Account,
+    AccountProvider,
     AccountStatus,  # noqa: F401
 )
 from app.modules.api_keys.service import (
@@ -486,8 +489,9 @@ class _StreamingMixin(_StreamingRetryMixin):
     ) -> AsyncIterator[str]:
         proxy = cast(_StreamingServiceProtocol, self)
         account_id_value = account.id
-        access_token = proxy._encryptor.decrypt(account.access_token_encrypted)
-        account_id = _header_account_id(account.chatgpt_account_id)
+        is_zai_account = (getattr(account, "provider", None) or AccountProvider.OPENAI.value) == AccountProvider.ZAI.value
+        access_token = "" if is_zai_account else proxy._encryptor.decrypt(account.access_token_encrypted)
+        account_id = None if is_zai_account else _header_account_id(account.chatgpt_account_id)
         model = payload.model
         requested_service_tier = payload.service_tier
         service_tier = requested_service_tier
@@ -528,14 +532,40 @@ class _StreamingMixin(_StreamingRetryMixin):
             )
 
         try:
-            route = await proxy._resolve_upstream_route_for_account(account, operation="responses")
+            if is_zai_account:
+                route = None
+            else:
+                route = await proxy._resolve_upstream_route_for_account(account, operation="responses")
             account_response_create_lease = await proxy._acquire_account_response_create_lease_or_overload(
                 account_id=account.id,
                 request_id=request_id,
                 surface="stream",
             )
             response_create_lease = await proxy._get_work_admission().acquire_response_create()
-            if upstream_stream_transport is not None:
+            if is_zai_account:
+                async with proxy._repo_factory() as repos:
+                    zai_credential = await repos.accounts.get_zai_credential(account.id)
+                    if zai_credential is None:
+                        raise ProxyResponseError(
+                            401,
+                            openai_error(
+                                "authentication_error",
+                                "Z.AI credential is missing for selected account.",
+                                error_type="authentication_error",
+                            ),
+                            failure_phase="credential",
+                            failure_detail="missing_zai_credential",
+                        )
+                    zai_api_key_encrypted = zai_credential.api_key_encrypted
+                    zai_base_url = zai_credential.base_url
+                zai_api_key = proxy._encryptor.decrypt(zai_api_key_encrypted)
+                stream = stream_zai_responses(
+                    payload,
+                    api_key=zai_api_key,
+                    base_url=zai_base_url,
+                    raise_for_status=True,
+                )
+            elif upstream_stream_transport is not None:
                 stream = _facade()._call_stream_with_supported_optional_kwargs(
                     _facade().core_stream_responses,
                     payload,

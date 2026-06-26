@@ -64,6 +64,7 @@ const PLAN_CLASS_MAP: Record<string, string> = {
 
 const REQUEST_KIND_LABELS: Record<string, string> = {
   normal: "Normal",
+  prewarm: "Prewarm",
   warmup: "Warmup",
   limit_warmup: "Warmup",
 };

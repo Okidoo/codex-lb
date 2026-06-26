@@ -33,6 +33,7 @@ class _WebSocketServiceProtocol(Protocol):
     _prepare_response_bridge_request_state: Any
     _prepare_websocket_response_create_request: Any
     _process_upstream_websocket_text: Any
+    _run_zai_websocket_request: Any
     _raise_for_unsupported_input_image_references: Any
     _refresh_websocket_api_key_policy: Any
     _relay_upstream_websocket_messages: Any
@@ -50,6 +51,7 @@ class _WebSocketServiceProtocol(Protocol):
     _select_websocket_connect_account: Any
     _send_downstream_websocket_bytes: Any
     _send_downstream_websocket_text: Any
+    _send_zai_websocket_event_block: Any
     _settle_stream_api_key_usage: Any
     _start_request_state_api_key_reservation_heartbeat: Any
     _try_open_websocket_connect_attempt: Any

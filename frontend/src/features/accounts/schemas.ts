@@ -58,6 +58,7 @@ export const AccountAdditionalQuotaSchema = z.object({
 
 export const AccountSummarySchema = z.object({
   accountId: z.string(),
+  provider: z.enum(["openai", "zai"]).optional(),
   chatgptAccountId: z.string().nullable().optional(),
   email: z.string(),
   alias: z.string().nullable().optional(),
@@ -106,11 +107,27 @@ export const AccountsResponseSchema = z.object({
 
 export const AccountImportResponseSchema = z.object({
   accountId: z.string(),
+  provider: z.enum(["openai", "zai"]).optional(),
   email: z.string(),
   workspaceId: z.string().nullable().optional(),
   workspaceLabel: z.string().nullable().optional(),
   seatType: z.string().nullable().optional(),
   planType: z.string(),
+  status: z.string(),
+});
+
+export const ZaiAccountCreateRequestSchema = z.object({
+  apiKey: z.string().min(1),
+  label: z.string().max(255).optional(),
+  baseUrl: z.url().optional(),
+});
+
+export const ZaiAccountCreateResponseSchema = z.object({
+  accountId: z.string(),
+  provider: z.literal("zai"),
+  email: z.string(),
+  label: z.string().nullable().optional(),
+  planType: z.literal("zai"),
   status: z.string(),
 });
 
@@ -294,6 +311,8 @@ export type AccountAdditionalQuota = z.infer<
 >;
 export type AccountProbeResponse = z.infer<typeof AccountProbeResponseSchema>;
 export type AccountTrendsResponse = z.infer<typeof AccountTrendsResponseSchema>;
+export type ZaiAccountCreateRequest = z.infer<typeof ZaiAccountCreateRequestSchema>;
+export type ZaiAccountCreateResponse = z.infer<typeof ZaiAccountCreateResponseSchema>;
 export type OpenCodeAuthJson = z.infer<typeof OpenCodeAuthJsonSchema>;
 export type CodexAuthJson = z.infer<typeof CodexAuthJsonSchema>;
 export type AccountAuthExportTokens = z.infer<typeof AccountAuthExportTokensSchema>;

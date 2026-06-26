@@ -68,8 +68,10 @@ from app.core.utils.request_id import get_request_id
 from app.core.utils.sse import CODEX_KEEPALIVE_FRAME as CODEX_KEEPALIVE_FRAME  # noqa: F401
 from app.core.utils.sse import format_sse_event, parse_sse_data_json
 from app.core.utils.time import utcnow as utcnow
+from app.core.zai.adapter import is_zai_model, stream_zai_responses
 from app.db.models import (
     Account,
+    AccountProvider,
     AccountStatus,  # noqa: F401
     StickySessionKind,
 )
@@ -709,6 +711,7 @@ class _WebSocketMixin:
                                     )
                                 request_state = prepared_request.request_state
                                 request_affinity = prepared_request.affinity_policy
+                                responses_payload = prepared_request.responses_payload
                                 text_data = prepared_request.text_data
                             except ProxyResponseError as exc:
                                 (
@@ -948,6 +951,63 @@ class _WebSocketMixin:
                                 )
                             )
                         continue
+                if (
+                    request_state is not None
+                    and responses_payload is not None
+                    and _websocket_payload_uses_zai(responses_payload)
+                ):
+                    zai_deadline = _websocket_connect_deadline(
+                        request_state,
+                        runtime_settings.proxy_request_budget_seconds,
+                    )
+                    account = await proxy._select_websocket_connect_account(
+                        zai_deadline,
+                        sticky_key=request_affinity.key,
+                        sticky_kind=request_affinity.kind,
+                        reallocate_sticky=request_affinity.reallocate_sticky,
+                        sticky_max_age_seconds=request_affinity.max_age_seconds,
+                        prefer_earlier_reset=prefer_earlier_reset,
+                        prefer_earlier_reset_window=_facade()._prefer_earlier_reset_window(settings),
+                        routing_strategy=routing_strategy,
+                        model=request_state.model,
+                        request_state=request_state,
+                        api_key=api_key,
+                        client_send_lock=client_send_lock,
+                        websocket=websocket,
+                        downstream_activity=downstream_activity,
+                        exclude_account_ids=set(),
+                        preferred_account_id=request_state.preferred_account_id,
+                        require_security_work_authorized=request_state.require_security_work_authorized,
+                    )
+                    if account is None:
+                        proxy._cancel_request_state_api_key_reservation_heartbeat(request_state)
+                        if request_state_registered:
+                            async with pending_lock:
+                                if request_state in pending_requests:
+                                    pending_requests.remove(request_state)
+                            await _release_websocket_response_create_gate(request_state, response_create_gate)
+                        continue
+                    await proxy._run_zai_websocket_request(
+                        websocket,
+                        account=account,
+                        responses_payload=responses_payload,
+                        request_state=request_state,
+                        pending_requests=pending_requests,
+                        pending_lock=pending_lock,
+                        client_send_lock=client_send_lock,
+                        api_key=api_key,
+                        response_create_gate=response_create_gate,
+                        continuity_state=continuity_state,
+                        downstream_activity=downstream_activity,
+                        codex_session_affinity=codex_session_affinity,
+                        text_data=text_data,
+                    )
+                    account = None
+                    request_state = None
+                    text_data = None
+                    payload = None
+                    continue
+
                     connect_headers = _facade()._headers_with_turn_state(filtered_headers, upstream_turn_state)
                     account, upstream = await proxy._connect_proxy_websocket(
                         connect_headers,
@@ -972,14 +1032,16 @@ class _WebSocketMixin:
                                     pending_requests.remove(request_state)
                             await _release_websocket_response_create_gate(request_state, response_create_gate)
                         continue
+                    assert upstream is not None
+                    active_upstream = upstream
                     account_lease = request_state.websocket_stream_lease
                     request_state.websocket_stream_lease = None
-                    upstream_turn_state = _facade()._upstream_turn_state_from_socket(upstream) or upstream_turn_state
+                    upstream_turn_state = _facade()._upstream_turn_state_from_socket(active_upstream) or upstream_turn_state
                     upstream_control = _WebSocketUpstreamControl()
                     upstream_reader = asyncio.create_task(
                         proxy._relay_upstream_websocket_messages(
                             websocket,
-                            upstream,
+                            active_upstream,
                             account=account,
                             account_id_value=account.id,
                             pending_requests=pending_requests,
@@ -1042,8 +1104,10 @@ class _WebSocketMixin:
                                 account=account,
                             )
                             request_state.request_text = text_data
+                        assert upstream is not None
                         await upstream.send_text(text_data)
                     elif bytes_data is not None:
+                        assert upstream is not None
                         await upstream.send_bytes(bytes_data)
                 except ProxyResponseError as exc:
                     error = _parse_openai_error(exc.payload)
@@ -1406,6 +1470,7 @@ class _WebSocketMixin:
             text_data=text_data,
             request_state=request_state,
             affinity_policy=affinity_policy,
+            responses_payload=responses_payload,
         )
 
     async def _connect_proxy_websocket(
@@ -2619,6 +2684,172 @@ class _WebSocketMixin:
                 except Exception:
                     _facade().logger.debug("Failed to close downstream websocket", exc_info=True)
 
+    async def _run_zai_websocket_request(
+        self,
+        websocket: WebSocket,
+        *,
+        account: Account,
+        responses_payload: ResponsesRequest,
+        request_state: _WebSocketRequestState,
+        pending_requests: deque[_WebSocketRequestState],
+        pending_lock: anyio.Lock,
+        client_send_lock: anyio.Lock,
+        api_key: ApiKeyData | None,
+        response_create_gate: asyncio.Semaphore,
+        continuity_state: "_WebSocketContinuityState | None" = None,
+        downstream_activity: _DownstreamWebSocketActivity | None = None,
+        codex_session_affinity: bool = False,
+        text_data: str | None = None,
+    ) -> None:
+        proxy = cast(_WebSocketServiceProtocol, self)
+        upstream_control = _WebSocketUpstreamControl()
+        stream_lease = request_state.websocket_stream_lease
+        request_state.websocket_stream_lease = None
+        if downstream_activity is None:
+            downstream_activity = _DownstreamWebSocketActivity()
+        try:
+            request_state.request_text = text_data
+            if request_state.account_response_create_lease is None:
+                request_state.account_response_create_lease = (
+                    await proxy._acquire_account_response_create_lease_or_overload(
+                        account_id=account.id,
+                        request_id=request_state.request_log_id or request_state.request_id,
+                        surface="websocket",
+                    )
+                )
+                request_state.account_response_create_release = proxy._load_balancer.release_account_lease
+
+            async with proxy._repo_factory() as repos:
+                zai_credential = await repos.accounts.get_zai_credential(account.id)
+                if zai_credential is None:
+                    raise ProxyResponseError(
+                        401,
+                        openai_error(
+                            "authentication_error",
+                            "Z.AI credential is missing for selected account.",
+                            error_type="authentication_error",
+                        ),
+                        failure_phase="credential",
+                        failure_detail="missing_zai_credential",
+                    )
+                zai_api_key_encrypted = zai_credential.api_key_encrypted
+                zai_base_url = zai_credential.base_url
+            zai_api_key = proxy._encryptor.decrypt(zai_api_key_encrypted)
+            async for event_block in stream_zai_responses(
+                responses_payload,
+                api_key=zai_api_key,
+                base_url=zai_base_url,
+                raise_for_status=True,
+            ):
+                await proxy._send_zai_websocket_event_block(
+                    event_block,
+                    websocket=websocket,
+                    account=account,
+                    request_state=request_state,
+                    pending_requests=pending_requests,
+                    pending_lock=pending_lock,
+                    client_send_lock=client_send_lock,
+                    api_key=api_key,
+                    upstream_control=upstream_control,
+                    response_create_gate=response_create_gate,
+                    continuity_state=continuity_state,
+                    downstream_activity=downstream_activity,
+                    codex_session_affinity=codex_session_affinity,
+                )
+        except ProxyResponseError as exc:
+            error = _parse_openai_error(exc.payload)
+            error_code = _normalize_error_code(error.code if error else None, error.type if error else None)
+            error_message = error.message if error and error.message else "Z.AI upstream request failed"
+            event_block = format_sse_event(
+                response_failed_event(
+                    error_code or "upstream_error",
+                    error_message,
+                    error_type=error.type if error and error.type else "server_error",
+                    response_id=_websocket_downstream_response_id(request_state),
+                    error_param=error.param if error else None,
+                )
+            )
+            await proxy._send_zai_websocket_event_block(
+                event_block,
+                websocket=websocket,
+                account=account,
+                request_state=request_state,
+                pending_requests=pending_requests,
+                pending_lock=pending_lock,
+                client_send_lock=client_send_lock,
+                api_key=api_key,
+                upstream_control=upstream_control,
+                response_create_gate=response_create_gate,
+                continuity_state=continuity_state,
+                downstream_activity=downstream_activity,
+                codex_session_affinity=codex_session_affinity,
+            )
+        finally:
+            await proxy._load_balancer.release_account_lease(stream_lease)
+
+    async def _send_zai_websocket_event_block(
+        self,
+        event_block: str,
+        *,
+        websocket: WebSocket,
+        account: Account,
+        request_state: _WebSocketRequestState,
+        pending_requests: deque[_WebSocketRequestState],
+        pending_lock: anyio.Lock,
+        client_send_lock: anyio.Lock,
+        api_key: ApiKeyData | None,
+        upstream_control: _WebSocketUpstreamControl,
+        response_create_gate: asyncio.Semaphore,
+        continuity_state: "_WebSocketContinuityState | None" = None,
+        downstream_activity: _DownstreamWebSocketActivity | None = None,
+        codex_session_affinity: bool = False,
+    ) -> None:
+        proxy = cast(_WebSocketServiceProtocol, self)
+        payload = parse_sse_data_json(event_block)
+        if payload is None:
+            return
+        downstream_text = await proxy._process_upstream_websocket_text(
+            json.dumps(payload, ensure_ascii=True, separators=(",", ":")),
+            account=account,
+            account_id_value=account.id,
+            pending_requests=pending_requests,
+            pending_lock=pending_lock,
+            api_key=api_key,
+            upstream_control=upstream_control,
+            response_create_gate=response_create_gate,
+            continuity_state=continuity_state,
+            codex_session_affinity=codex_session_affinity,
+        )
+        downstream_texts = upstream_control.downstream_texts
+        suppress_downstream_event = upstream_control.suppress_downstream_event
+        upstream_control.downstream_texts = None
+        upstream_control.suppress_downstream_event = False
+        texts = downstream_texts if downstream_texts is not None else ([] if suppress_downstream_event else [downstream_text])
+        for emitted_text in texts:
+            try:
+                await proxy._send_downstream_websocket_text(
+                    websocket,
+                    client_send_lock=client_send_lock,
+                    text=emitted_text,
+                    downstream_activity=downstream_activity,
+                )
+            except Exception:
+                if downstream_activity is not None:
+                    downstream_activity.mark_disconnected()
+                await proxy._fail_pending_websocket_requests(
+                    account=None,
+                    account_id_value=account.id,
+                    pending_requests=pending_requests,
+                    pending_lock=pending_lock,
+                    error_code="client_disconnected",
+                    error_message="Downstream websocket disconnected before response.completed",
+                    api_key=api_key,
+                    response_create_gate=response_create_gate,
+                    status="cancelled",
+                    penalize_account=False,
+                )
+                raise
+
     async def _process_upstream_websocket_text(
         self,
         text: str,
@@ -3752,3 +3983,7 @@ class _WebSocketMixin:
             await websocket.send_bytes(data)
             if downstream_activity is not None:
                 downstream_activity.mark()
+
+
+def _websocket_payload_uses_zai(payload: ResponsesRequest) -> bool:
+    return is_zai_model(payload.model)

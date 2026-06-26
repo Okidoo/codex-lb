@@ -10,6 +10,7 @@ import { AccountDetail } from "@/features/accounts/components/account-detail";
 import { AccountList } from "@/features/accounts/components/account-list";
 import { AccountsSkeleton } from "@/features/accounts/components/accounts-skeleton";
 import { ImportDialog } from "@/features/accounts/components/import-dialog";
+import { ZaiAccountDialog } from "@/features/accounts/components/zai-account-dialog";
 import { AuthExportDialog } from "@/features/accounts/components/auth-export-dialog";
 import { useAccounts } from "@/features/accounts/hooks/use-accounts";
 import {
@@ -36,6 +37,7 @@ export function AccountsPage() {
   const {
     accountsQuery,
     importMutation,
+    zaiCreateMutation,
     pauseMutation,
     resumeMutation,
     setAliasMutation,
@@ -52,6 +54,7 @@ export function AccountsPage() {
 
   const importDialog = useDialogState();
   const oauthDialog = useDialogState();
+  const zaiDialog = useDialogState();
   const deleteDialog = useDialogState<string>();
   const exportDialog = useDialogState<AccountAuthExportResponse>();
   const [deleteHistory, setDeleteHistory] = useState(false);
@@ -101,6 +104,7 @@ export function AccountsPage() {
 
   const mutationBusy =
     importMutation.isPending ||
+    zaiCreateMutation.isPending ||
     pauseMutation.isPending ||
     resumeMutation.isPending ||
     setAliasMutation.isPending ||
@@ -114,6 +118,7 @@ export function AccountsPage() {
 
   const mutationError =
     getErrorMessageOrNull(importMutation.error) ||
+    getErrorMessageOrNull(zaiCreateMutation.error) ||
     getErrorMessageOrNull(pauseMutation.error) ||
     getErrorMessageOrNull(resumeMutation.error) ||
     getErrorMessageOrNull(setAliasMutation.error) ||
@@ -151,10 +156,11 @@ export function AccountsPage() {
               onSelect={handleSelectAccount}
               sortMode={accountSortMode}
               onSortModeChange={setAccountSortMode}
-              onOpenImport={() => importDialog.show()}
-              onOpenOauth={() => oauthDialog.show()}
-              readOnly={!canWrite}
-            />
+                onOpenImport={() => importDialog.show()}
+                onOpenOauth={() => oauthDialog.show()}
+                onOpenZai={() => zaiDialog.show()}
+                readOnly={!canWrite}
+              />
           </div>
 
           <AccountDetail
@@ -208,6 +214,16 @@ export function AccountsPage() {
         onOpenChange={importDialog.onOpenChange}
         onImport={async (file) => {
           await importMutation.mutateAsync(file);
+        }}
+      />
+
+      <ZaiAccountDialog
+        open={zaiDialog.open}
+        busy={zaiCreateMutation.isPending}
+        error={getErrorMessageOrNull(zaiCreateMutation.error)}
+        onOpenChange={zaiDialog.onOpenChange}
+        onCreate={async (payload) => {
+          await zaiCreateMutation.mutateAsync(payload);
         }}
       />
 

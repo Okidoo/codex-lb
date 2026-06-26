@@ -2,6 +2,7 @@ import { Check, Pencil, User, X } from "lucide-react";
 import { useState } from "react";
 
 import { isEmailLabel } from "@/components/blur-email";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
@@ -89,6 +90,8 @@ export function AccountDetail({
   const idSuffix = showAccountId ? ` (${compactId})` : "";
   const workspaceLabel = account.chatgptAccountId || account.workspaceLabel || account.workspaceId || "Personal / unknown workspace";
   const seatLabel = account.seatType ? ` | ${formatSlug(account.seatType)}` : "";
+  const provider = account.provider ?? "openai";
+  const isZaiAccount = provider === "zai";
 
   return (
     <div
@@ -109,6 +112,9 @@ export function AccountDetail({
           readOnly={readOnly}
           onSetAlias={onSetAlias}
         />
+        <div className="mt-1.5">
+          <ProviderBadge provider={provider} />
+        </div>
         {emailSubtitle ? (
           <p
             className="mt-0.5 text-xs text-muted-foreground"
@@ -137,7 +143,7 @@ export function AccountDetail({
         />
       ) : null}
       <AccountUsagePanel account={account} trends={trends} />
-      <AccountTokenInfo account={account} />
+      {isZaiAccount ? null : <AccountTokenInfo account={account} />}
       <AccountActions
         account={account}
         busy={busy}
@@ -274,5 +280,22 @@ function AccountNameField({
         <Pencil className="size-3.5" />
       </Button>
     </div>
+  );
+}
+
+function ProviderBadge({ provider }: { provider: AccountSummary["provider"] }) {
+  const isZai = provider === "zai";
+  return (
+    <Badge
+      variant="outline"
+      className={cn(
+        "px-1.5 text-[11px]",
+        isZai
+          ? "border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300"
+          : "text-muted-foreground",
+      )}
+    >
+      {isZai ? "Z.AI" : "OpenAI"}
+    </Badge>
   );
 }

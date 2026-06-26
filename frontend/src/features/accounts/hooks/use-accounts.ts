@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
 import {
+  createZaiAccount,
   deleteAccount,
   exportAccountAuth,
   getAccountTrends,
@@ -15,7 +16,7 @@ import {
   updateAccountLimitWarmup,
   updateAccountRoutingPolicy,
 } from "@/features/accounts/api";
-import type { AccountRoutingPolicy } from "@/features/accounts/schemas";
+import type { AccountRoutingPolicy, ZaiAccountCreateRequest } from "@/features/accounts/schemas";
 
 /**
  * Account mutation actions without the polling query.
@@ -36,6 +37,20 @@ export function useAccountMutations() {
     },
     onError: (error: Error) => {
       toast.error(error.message || "Import failed");
+    },
+  });
+
+  const zaiCreateMutation = useMutation({
+    mutationFn: (payload: ZaiAccountCreateRequest) => createZaiAccount(payload),
+    onSuccess: () => {
+      toast.success("Z.AI account added");
+      void queryClient.invalidateQueries({ queryKey: ["accounts", "list"] });
+      void queryClient.invalidateQueries({ queryKey: ["accounts", "trends"] });
+      void queryClient.invalidateQueries({ queryKey: ["dashboard", "overview"] });
+      void queryClient.invalidateQueries({ queryKey: ["dashboard", "projections"] });
+    },
+    onError: (error: Error) => {
+      toast.error(error.message || "Z.AI account add failed");
     },
   });
 
@@ -179,6 +194,7 @@ export function useAccountMutations() {
 
   return {
     importMutation,
+    zaiCreateMutation,
     pauseMutation,
     resumeMutation,
     setAliasMutation,

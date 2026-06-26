@@ -31,6 +31,7 @@ export type AccountListProps = {
   onSelect: (accountId: string) => void;
   onOpenImport: () => void;
   onOpenOauth: () => void;
+  onOpenZai?: () => void;
   sortMode?: AccountSortMode;
   onSortModeChange?: (sortMode: AccountSortMode) => void;
   readOnly?: boolean;
@@ -42,6 +43,7 @@ export function AccountList({
   onSelect,
   onOpenImport,
   onOpenOauth,
+  onOpenZai,
   sortMode,
   onSortModeChange,
   readOnly = false,
@@ -170,6 +172,7 @@ export function AccountList({
         onOpenChange={setChooserOpen}
         onImport={onOpenImport}
         onAddAccount={onOpenOauth}
+        onAddZai={onOpenZai ?? (() => undefined)}
       />
     </div>
   );

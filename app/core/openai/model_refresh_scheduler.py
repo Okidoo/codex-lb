@@ -14,7 +14,7 @@ from app.core.config.settings import get_settings
 from app.core.crypto import TokenEncryptor
 from app.core.openai.model_registry import UpstreamModel, get_model_registry
 from app.core.upstream_proxy import ResolvedUpstreamRoute, resolve_upstream_route
-from app.db.models import Account, AccountStatus
+from app.db.models import Account, AccountProvider, AccountStatus
 from app.db.session import get_background_session
 from app.modules.accounts.auth_manager import AuthManager
 from app.modules.accounts.repository import AccountsRepository
@@ -114,6 +114,8 @@ class ModelRefreshScheduler:
 def _group_by_plan(accounts: list[Account]) -> dict[str, list[Account]]:
     grouped: dict[str, list[Account]] = {}
     for account in accounts:
+        if not _is_openai_account(account):
+            continue
         if account.status != AccountStatus.ACTIVE:
             continue
         plan_type = account.plan_type
@@ -143,6 +145,12 @@ def _error_summary(exc: BaseException) -> str:
 
 def _compact_error_message(message: str) -> str:
     return " ".join(message.split())
+
+
+def _is_openai_account(account: Account) -> bool:
+    return (getattr(account, "provider", AccountProvider.OPENAI.value) or AccountProvider.OPENAI.value) == (
+        AccountProvider.OPENAI.value
+    )
 
 
 async def _fetch_with_failover(

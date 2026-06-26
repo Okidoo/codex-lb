@@ -51,7 +51,14 @@ from app.core.resilience.degradation import get_status as get_degradation_status
 from app.core.resilience.degradation import set_degraded, set_normal
 from app.core.usage.quota import apply_usage_quota
 from app.core.utils.time import utcnow
-from app.db.models import Account, AccountStatus, AdditionalUsageHistory, StickySessionKind, UsageHistory
+from app.db.models import (
+    Account,
+    AccountProvider,
+    AccountStatus,
+    AdditionalUsageHistory,
+    StickySessionKind,
+    UsageHistory,
+)
 from app.modules.proxy.account_cache import get_account_selection_cache, mark_account_routing_unavailable
 from app.modules.proxy.additional_model_limits import get_additional_quota_key_for_model_id
 from app.modules.proxy.repo_bundle import ProxyRepoFactory, ProxyRepositories
@@ -824,6 +831,9 @@ class LoadBalancer:
             if account_ids is not None:
                 allowed_account_ids = set(account_ids)
                 accounts = [account for account in accounts if account.id in allowed_account_ids]
+            required_provider = _provider_for_model(model)
+            if required_provider is not None:
+                accounts = _filter_accounts_for_provider(accounts, required_provider)
             pre_model_filter_accounts = accounts
             if model and _mapped_model_has_registry_entry(model):
                 accounts = _filter_accounts_for_model(pre_model_filter_accounts, model)
@@ -2182,6 +2192,25 @@ def _filter_accounts_for_model(accounts: list[Account], model: str) -> list[Acco
     if allowed_plans is None:
         return accounts
     return [a for a in accounts if account_plan_matches_allowed(a.plan_type, allowed_plans)]
+
+
+def _provider_for_model(model: str | None) -> str | None:
+    if not isinstance(model, str):
+        return None
+    normalized = model.strip().lower()
+    if not normalized:
+        return None
+    if normalized.startswith("glm-"):
+        return AccountProvider.ZAI.value
+    return AccountProvider.OPENAI.value
+
+
+def _filter_accounts_for_provider(accounts: list[Account], provider: str) -> list[Account]:
+    return [
+        account
+        for account in accounts
+        if (getattr(account, "provider", None) or AccountProvider.OPENAI.value) == provider
+    ]
 
 
 def _selectable_accounts(accounts: list[Account]) -> list[Account]:

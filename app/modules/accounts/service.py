@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 from datetime import timedelta
@@ -27,7 +28,7 @@ from app.core.plan_types import coerce_account_plan_type
 from app.core.upstream_proxy import UpstreamProxyRouteError, resolve_upstream_route
 from app.core.upstream_proxy.resolver import _is_missing_upstream_proxy_schema
 from app.core.utils.time import naive_utc_to_epoch, to_utc_naive, utcnow
-from app.db.models import Account, AccountStatus, DashboardSettings
+from app.db.models import Account, AccountProvider, AccountStatus, DashboardSettings, ZaiCredential
 from app.modules.accounts.auth_manager import AuthManager
 from app.modules.accounts.mappers import build_account_summaries, build_account_usage_trends
 from app.modules.accounts.repository import AccountsRepository
@@ -48,6 +49,8 @@ from app.modules.accounts.schemas import (
     CodexAuthTokens,
     OpenCodeAuthJson,
     OpenCodeOAuthAuth,
+    ZaiAccountCreateRequest,
+    ZaiAccountCreateResponse,
 )
 from app.modules.limit_warmup.repository import LimitWarmupRepository
 from app.modules.proxy.account_cache import (
@@ -75,6 +78,24 @@ PROBE_CONNECT_TIMEOUT_SECONDS = 10.0
 # return.
 PROBE_NETWORK_FAILURE_STATUS = 0
 IMPORT_PROXY_REQUIRED_PAUSE_REASON = "upstream_proxy_required_on_import"
+_ZAI_PLAN_TYPE = "zai"
+_ZAI_WORKSPACE_LABEL = "Z.AI"
+_ZAI_SEAT_TYPE = "coding_plan"
+_ZAI_PLACEHOLDER_TOKEN = "zai-provider-placeholder"
+
+
+def _zai_api_key_hash(api_key: str) -> str:
+    return hashlib.sha256(api_key.encode("utf-8")).hexdigest()
+
+
+def _zai_key_id(api_key: str, api_key_hash: str) -> str:
+    prefix = api_key.split(".", 1)[0].strip()
+    return prefix or api_key_hash[:32]
+
+
+def _zai_account_email(key_id: str) -> str:
+    safe = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in key_id.lower()).strip("-")
+    return f"zai-{safe or 'account'}@z.ai"
 
 
 class InvalidAuthJsonError(Exception):
@@ -280,6 +301,53 @@ class AccountsService:
             opencode_auth_json=opencode_auth_json,
         )
 
+    async def create_zai_account(self, payload: ZaiAccountCreateRequest) -> ZaiAccountCreateResponse:
+        api_key = payload.api_key.strip()
+        api_key_hash = _zai_api_key_hash(api_key)
+        key_id = _zai_key_id(api_key, api_key_hash)
+        label = payload.label.strip() if payload.label else None
+        base_url = (payload.base_url or get_settings().zai_base_url).strip().rstrip("/")
+        account_id = f"zai_{api_key_hash[:24]}"
+        email = _zai_account_email(key_id)
+        now = utcnow()
+        encrypted_placeholder = self._encryptor.encrypt(_ZAI_PLACEHOLDER_TOKEN)
+
+        account = Account(
+            id=account_id,
+            provider=AccountProvider.ZAI.value,
+            chatgpt_account_id=None,
+            email=email,
+            alias=label or "Z.AI",
+            workspace_id=None,
+            workspace_label=_ZAI_WORKSPACE_LABEL,
+            seat_type=_ZAI_SEAT_TYPE,
+            plan_type=_ZAI_PLAN_TYPE,
+            access_token_encrypted=encrypted_placeholder,
+            refresh_token_encrypted=encrypted_placeholder,
+            id_token_encrypted=encrypted_placeholder,
+            last_refresh=now,
+            status=AccountStatus.ACTIVE,
+            deactivation_reason=None,
+            reset_at=None,
+            blocked_at=None,
+        )
+        credential = ZaiCredential(
+            account_id=account_id,
+            api_key_encrypted=self._encryptor.encrypt(api_key),
+            api_key_hash=api_key_hash,
+            base_url=base_url,
+        )
+        saved = await self._repo.save_zai_account(account, credential)
+        get_account_selection_cache().invalidate()
+        return ZaiAccountCreateResponse(
+            account_id=saved.id,
+            provider=AccountProvider.ZAI.value,
+            email=saved.email,
+            label=saved.alias,
+            plan_type=saved.plan_type,
+            status=saved.status.value,
+        )
+
     async def import_account(self, raw: bytes) -> AccountImportResponse:
         try:
             auth = parse_auth_json(raw)
@@ -329,6 +397,7 @@ class AccountsService:
         get_account_selection_cache().invalidate()
         return AccountImportResponse(
             account_id=saved.id,
+            provider=getattr(saved, "provider", AccountProvider.OPENAI.value) or AccountProvider.OPENAI.value,
             email=saved.email,
             workspace_id=saved.workspace_id,
             workspace_label=saved.workspace_label,

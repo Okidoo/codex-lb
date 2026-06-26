@@ -93,11 +93,12 @@ export function AccountListItem({
           </p>
           <p className="truncate text-xs text-muted-foreground" title={showAccountId ? `Account ID ${account.accountId}` : undefined}>
             {emailSubtitle ? <><span className={blurred ? "privacy-blur" : undefined}>{emailSubtitle}</span> | {slotSubtitle}{idSuffix}</> : <>{slotSubtitle}{idSuffix}</>}
-          </p>
-        </div>
-        {showRoutingPolicy ? (
-          <RoutingPolicyBadge
-            policy={account.routingPolicy as AccountRoutingPolicy | undefined}
+        </p>
+      </div>
+      <ProviderBadge provider={account.provider ?? "openai"} />
+      {showRoutingPolicy ? (
+        <RoutingPolicyBadge
+          policy={account.routingPolicy as AccountRoutingPolicy | undefined}
           />
         ) : null}
         {account.securityWorkAuthorized === true ? (
@@ -141,6 +142,23 @@ export function AccountListItem({
         <span className="truncate">{warmupMeta}</span>
       </div>
     </button>
+  );
+}
+
+function ProviderBadge({ provider }: { provider: AccountSummary["provider"] }) {
+  const isZai = provider === "zai";
+  return (
+    <Badge
+      variant="outline"
+      className={cn(
+        "shrink-0 px-1.5 text-[11px]",
+        isZai
+          ? "border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300"
+          : "text-muted-foreground",
+      )}
+    >
+      {isZai ? "Z.AI" : "OpenAI"}
+    </Badge>
   );
 }
 

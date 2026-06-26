@@ -136,6 +136,71 @@ def _bootstrap_model(
     )
 
 
+_ZAI_AVAILABLE_IN_PLANS = frozenset({"zai"})
+_ZAI_MODELS: tuple[UpstreamModel, ...] = (
+    _bootstrap_model(
+        "glm-4.7",
+        "GLM-4.7",
+        prefer_websockets=False,
+        minimal_client_version=None,
+        input_modalities=("text",),
+        default_reasoning_level=None,
+        default_verbosity=None,
+        available_in_plans=_ZAI_AVAILABLE_IN_PLANS,
+        raw={"provider": "zai"},
+    ),
+    _bootstrap_model(
+        "glm-5",
+        "GLM-5",
+        prefer_websockets=False,
+        minimal_client_version=None,
+        input_modalities=("text",),
+        default_reasoning_level=None,
+        default_verbosity=None,
+        available_in_plans=_ZAI_AVAILABLE_IN_PLANS,
+        raw={"provider": "zai"},
+    ),
+    _bootstrap_model(
+        "glm-5-turbo",
+        "GLM-5 Turbo",
+        prefer_websockets=False,
+        minimal_client_version=None,
+        input_modalities=("text",),
+        default_reasoning_level=None,
+        default_verbosity=None,
+        available_in_plans=_ZAI_AVAILABLE_IN_PLANS,
+        raw={"provider": "zai"},
+    ),
+    _bootstrap_model(
+        "glm-5.1",
+        "GLM-5.1",
+        prefer_websockets=False,
+        minimal_client_version=None,
+        input_modalities=("text",),
+        default_reasoning_level=None,
+        default_verbosity=None,
+        available_in_plans=_ZAI_AVAILABLE_IN_PLANS,
+        raw={"provider": "zai"},
+    ),
+    _bootstrap_model(
+        "glm-5.2",
+        "GLM-5.2",
+        prefer_websockets=False,
+        minimal_client_version=None,
+        input_modalities=("text",),
+        default_reasoning_level=None,
+        default_verbosity=None,
+        available_in_plans=_ZAI_AVAILABLE_IN_PLANS,
+        raw={"provider": "zai"},
+    ),
+)
+_LOCAL_PROVIDER_MODELS: dict[str, UpstreamModel] = {model.slug: model for model in _ZAI_MODELS}
+
+
+def _merge_local_provider_models(models: dict[str, UpstreamModel]) -> dict[str, UpstreamModel]:
+    return {**models, **_LOCAL_PROVIDER_MODELS}
+
+
 # Static bundled fallback models used before the first upstream registry refresh.
 # This mirrors Codex's model-manager pattern: ship a conservative catalog so
 # startup/offline paths have usable metadata, then treat the live upstream
@@ -204,7 +269,9 @@ class ModelRegistry:
             raise ValueError("ttl_seconds must be positive")
         self._ttl_seconds = ttl_seconds
         self._snapshot: ModelRegistrySnapshot | None = None
-        self._bootstrap_models: dict[str, UpstreamModel] = {m.slug: m for m in _BOOTSTRAP_STATIC_MODELS}
+        self._bootstrap_models: dict[str, UpstreamModel] = _merge_local_provider_models(
+            {m.slug: m for m in _BOOTSTRAP_STATIC_MODELS}
+        )
         self._lock = anyio.Lock()
 
     def get_snapshot(self) -> ModelRegistrySnapshot | None:
@@ -213,11 +280,14 @@ class ModelRegistry:
     def get_models_with_fallback(self) -> dict[str, UpstreamModel]:
         snapshot = self._snapshot
         if snapshot is not None:
-            return snapshot.models
+            return _merge_local_provider_models(snapshot.models)
         return self._bootstrap_models
 
     def plan_types_for_model(self, slug: str) -> frozenset[str] | None:
         normalized_slug = slug.strip().lower()
+        local_model = _LOCAL_PROVIDER_MODELS.get(slug) or _LOCAL_PROVIDER_MODELS.get(normalized_slug)
+        if local_model is not None:
+            return local_model.available_in_plans
         if self._snapshot is None:
             model = self._bootstrap_models.get(slug) or self._bootstrap_models.get(normalized_slug)
             return model.available_in_plans if model is not None else None
@@ -229,6 +299,10 @@ class ModelRegistry:
         normalized_slug = slug.strip().lower()
         if not normalized_slug:
             return False
+
+        local_model = _LOCAL_PROVIDER_MODELS.get(slug) or _LOCAL_PROVIDER_MODELS.get(normalized_slug)
+        if local_model is not None:
+            return local_model.prefer_websockets
 
         if self._snapshot is not None:
             model = self._snapshot.models.get(slug) or self._snapshot.models.get(normalized_slug)
@@ -276,6 +350,10 @@ class ModelRegistry:
                     for model in plan_models_list:
                         models[model.slug] = model
                         model_plans.setdefault(model.slug, set()).add(plan_type)
+
+                for slug, model in _LOCAL_PROVIDER_MODELS.items():
+                    models[slug] = model
+                    model_plans.setdefault(slug, set()).update(model.available_in_plans)
 
                 frozen_model_plans: dict[str, frozenset[str]] = {
                     slug: frozenset(plans) for slug, plans in model_plans.items()

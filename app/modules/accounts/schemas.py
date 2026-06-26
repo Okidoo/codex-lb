@@ -72,6 +72,7 @@ class AccountAdditionalQuota(DashboardModel):
 
 class AccountSummary(DashboardModel):
     account_id: str
+    provider: str = "openai"
     chatgpt_account_id: str | None = None
     email: str
     alias: str | None = None
@@ -123,11 +124,27 @@ class AccountsResponse(DashboardModel):
 
 class AccountImportResponse(DashboardModel):
     account_id: str
+    provider: str = "openai"
     email: str
     workspace_id: str | None = None
     workspace_label: str | None = None
     seat_type: str | None = None
     plan_type: str
+    status: str
+
+
+class ZaiAccountCreateRequest(DashboardModel):
+    api_key: str = Field(min_length=1)
+    label: str | None = Field(default=None, min_length=1, max_length=128)
+    base_url: str | None = Field(default=None, min_length=1, max_length=512)
+
+
+class ZaiAccountCreateResponse(DashboardModel):
+    account_id: str
+    provider: str = "zai"
+    email: str
+    label: str | None = None
+    plan_type: str = "zai"
     status: str
 
 

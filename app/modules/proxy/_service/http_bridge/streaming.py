@@ -46,6 +46,7 @@ from app.core.openai.requests import (
 )
 from app.core.types import JsonValue
 from app.core.utils.request_id import ensure_request_id
+from app.core.zai.adapter import is_zai_model
 from app.core.utils.sse import format_sse_event, parse_sse_data_json
 from app.db.models import (
     StickySessionKind,
@@ -345,6 +346,13 @@ class _HTTPBridgeStreamingMixin:
                 image_request,
                 image_generation_request,
                 request_id,
+            )
+            runtime_config = dataclasses.replace(runtime_config, enabled=False)
+        if runtime_config.enabled and is_zai_model(payload.model):
+            logger.info(
+                "stream_responses bypassing http bridge for Z.AI model request_id=%s model=%s",
+                request_id,
+                payload.model,
             )
             runtime_config = dataclasses.replace(runtime_config, enabled=False)
         if not runtime_config.enabled:

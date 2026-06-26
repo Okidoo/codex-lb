@@ -23,8 +23,10 @@ import {
   OauthStartResponseSchema,
   OauthStatusResponseSchema,
   RuntimeConnectAddressResponseSchema,
+  ZaiAccountCreateRequestSchema,
+  ZaiAccountCreateResponseSchema,
 } from "@/features/accounts/schemas";
-import type { AccountRoutingPolicy } from "@/features/accounts/schemas";
+import type { AccountRoutingPolicy, ZaiAccountCreateRequest } from "@/features/accounts/schemas";
 
 const ACCOUNTS_BASE_PATH = "/api/accounts";
 const OAUTH_BASE_PATH = "/api/oauth";
@@ -38,6 +40,13 @@ export function importAccount(file: File) {
   formData.append("auth_json", file);
   return post(`${ACCOUNTS_BASE_PATH}/import`, AccountImportResponseSchema, {
     body: formData,
+  });
+}
+
+export function createZaiAccount(payload: ZaiAccountCreateRequest) {
+  const validated = ZaiAccountCreateRequestSchema.parse(payload);
+  return post(`${ACCOUNTS_BASE_PATH}/zai`, ZaiAccountCreateResponseSchema, {
+    body: validated,
   });
 }
 

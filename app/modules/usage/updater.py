@@ -25,7 +25,7 @@ from app.core.upstream_proxy import ResolvedUpstreamRoute, UpstreamProxyRouteErr
 from app.core.usage.models import AdditionalRateLimitPayload, UsagePayload, UsageWindow
 from app.core.utils.request_id import get_request_id
 from app.core.utils.time import utcnow
-from app.db.models import Account, AccountStatus, UsageHistory
+from app.db.models import Account, AccountProvider, AccountStatus, UsageHistory
 from app.db.session import get_background_session
 from app.modules.accounts.auth_manager import AccountsRepositoryPort, AuthManager
 from app.modules.proxy.account_cache import get_account_selection_cache, mark_account_routing_unavailable
@@ -252,6 +252,8 @@ class UsageUpdater:
         interval = settings.usage_refresh_interval_seconds
         _prune_usage_refresh_auth_cooldowns()
         for account in accounts:
+            if not _is_openai_account(account):
+                continue
             if account.status in (AccountStatus.REAUTH_REQUIRED, AccountStatus.DEACTIVATED):
                 continue
             if _is_usage_refresh_in_cooldown(account.id):
@@ -1077,3 +1079,9 @@ def _clear_usage_refresh_state() -> None:
     _usage_refresh_auth_cooldowns.clear()
     _last_successful_refresh.clear()
     _USAGE_REFRESH_SINGLEFLIGHT.clear()
+
+
+def _is_openai_account(account: Account) -> bool:
+    return (getattr(account, "provider", AccountProvider.OPENAI.value) or AccountProvider.OPENAI.value) == (
+        AccountProvider.OPENAI.value
+    )

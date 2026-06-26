@@ -32,6 +32,8 @@ from app.modules.accounts.schemas import (
     AccountTrendsResponse,
     AccountUpdateRequest,
     AccountUpdateResponse,
+    ZaiAccountCreateRequest,
+    ZaiAccountCreateResponse,
 )
 from app.modules.accounts.service import AccountNotProbableError, AccountStateTransitionError, InvalidAuthJsonError
 
@@ -147,6 +149,22 @@ async def import_account(
         raise DashboardBadRequestError("Invalid auth.json payload", code="invalid_auth_json") from exc
     except AccountIdentityConflictError as exc:
         raise DashboardConflictError(str(exc), code="duplicate_identity_conflict") from exc
+
+
+@router.post("/zai", response_model=ZaiAccountCreateResponse)
+async def create_zai_account(
+    request: Request,
+    payload: ZaiAccountCreateRequest,
+    _write_access=Depends(require_dashboard_write_access),
+    context: AccountsContext = Depends(get_accounts_context),
+) -> ZaiAccountCreateResponse:
+    response = await context.service.create_zai_account(payload)
+    AuditService.log_async(
+        "account_created",
+        actor_ip=request.client.host if request.client else None,
+        details={"account_id": response.account_id, "provider": response.provider},
+    )
+    return response
 
 
 @router.post("/{account_id}/reactivate", response_model=AccountReactivateResponse)

@@ -56,6 +56,7 @@ export function AccountActions({
   onLimitWarmupChange,
   onRoutingPolicyChange,
 }: AccountActionsProps) {
+  const isOpenAiAccount = (account.provider ?? "openai") === "openai";
   const showOperatorRecoveryAction =
     account.status === "reauth_required" || account.status === "deactivated";
   const probeDisabled =
@@ -95,23 +96,25 @@ export function AccountActions({
         </div>
       ) : null}
 
-      <label
-        htmlFor={`security-work-authorized-${account.accountId}`}
-        className="flex items-center justify-between gap-3 rounded-md border px-3 py-2"
-      >
-        <span className="flex min-w-0 items-center gap-2 text-xs font-medium">
-          <ShieldCheck className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-          <span className="truncate">Trusted Access for Cyber</span>
-        </span>
-        <Switch
-          id={`security-work-authorized-${account.accountId}`}
-          checked={account.securityWorkAuthorized ?? false}
-          disabled={busy || readOnly}
-          onCheckedChange={(checked) =>
-            onSecurityWorkAuthorizedChange(account.accountId, checked)
-          }
-        />
-      </label>
+      {isOpenAiAccount ? (
+        <label
+          htmlFor={`security-work-authorized-${account.accountId}`}
+          className="flex items-center justify-between gap-3 rounded-md border px-3 py-2"
+        >
+          <span className="flex min-w-0 items-center gap-2 text-xs font-medium">
+            <ShieldCheck className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+            <span className="truncate">Trusted Access for Cyber</span>
+          </span>
+          <Switch
+            id={`security-work-authorized-${account.accountId}`}
+            checked={account.securityWorkAuthorized ?? false}
+            disabled={busy || readOnly}
+            onCheckedChange={(checked) =>
+              onSecurityWorkAuthorizedChange(account.accountId, checked)
+            }
+          />
+        </label>
+      ) : null}
 
       <div className="flex flex-wrap gap-2">
         {account.status === "paused" ? (
@@ -139,7 +142,7 @@ export function AccountActions({
           </Button>
         )}
 
-        {showOperatorRecoveryAction ? (
+        {showOperatorRecoveryAction && isOpenAiAccount ? (
           <Button
             type="button"
             size="sm"
@@ -153,43 +156,47 @@ export function AccountActions({
           </Button>
         ) : null}
 
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          className="h-8 gap-1.5 text-xs"
-          onClick={() => onProbe(account.accountId)}
-          disabled={probeDisabled}
-        >
-          <Activity className="h-3.5 w-3.5" />
-          Force probe
-        </Button>
+        {isOpenAiAccount ? (
+          <>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-8 gap-1.5 text-xs"
+              onClick={() => onProbe(account.accountId)}
+              disabled={probeDisabled}
+            >
+              <Activity className="h-3.5 w-3.5" />
+              Force probe
+            </Button>
 
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          className="h-8 gap-1.5 text-xs"
-          onClick={() =>
-            onLimitWarmupChange(account.accountId, !account.limitWarmupEnabled)
-          }
-          disabled={busy || readOnly}
-        >
-          <Zap className="h-3.5 w-3.5" />
-          {account.limitWarmupEnabled ? "Disable warm-up" : "Enable warm-up"}
-        </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-8 gap-1.5 text-xs"
+              onClick={() =>
+                onLimitWarmupChange(account.accountId, !account.limitWarmupEnabled)
+              }
+              disabled={busy || readOnly}
+            >
+              <Zap className="h-3.5 w-3.5" />
+              {account.limitWarmupEnabled ? "Disable warm-up" : "Enable warm-up"}
+            </Button>
 
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          className="h-8 gap-1.5 text-xs"
-          onClick={() => onExportAuth(account.accountId)}
-          disabled={busy || readOnly}
-        >
-          <Download className="h-3.5 w-3.5" />
-          Export
-        </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-8 gap-1.5 text-xs"
+              onClick={() => onExportAuth(account.accountId)}
+              disabled={busy || readOnly}
+            >
+              <Download className="h-3.5 w-3.5" />
+              Export
+            </Button>
+          </>
+        ) : null}
 
         <Button
           type="button"

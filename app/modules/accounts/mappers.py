@@ -101,7 +101,8 @@ def _account_to_summary(
     is_email_duplicate: bool = False,
 ) -> AccountSummary:
     plan_type = coerce_account_plan_type(account.plan_type, DEFAULT_PLAN)
-    auth_status = _build_auth_status(account, encryptor) if include_auth else None
+    provider = getattr(account, "provider", "openai") or "openai"
+    auth_status = _build_auth_status(account, encryptor) if include_auth and provider == "openai" else None
     effective_primary_usage, effective_secondary_usage = _effective_usage_windows(
         primary_usage,
         secondary_usage,
@@ -150,15 +151,13 @@ def _account_to_summary(
             if weekly_only_usage and primary_usage is not None
             else None
         )
-        zero_capacity_primary_known_non_primary = (
-            primary_window_minutes is not None and not usage_core.is_primary_window_minutes(primary_window_minutes)
-        )
         keep_primary_status_signal = (
             account.status == AccountStatus.RATE_LIMITED
             and usage_core.is_primary_window_minutes(primary_window_minutes)
+            and not long_quota_available
         )
         can_hide_zero_capacity_primary = account.status != AccountStatus.RATE_LIMITED or (
-            zero_capacity_primary_known_non_primary and long_quota_available
+            account.reset_at is not None and primary_window_minutes is not None and long_quota_available
         )
         if not keep_primary_status_signal and can_hide_zero_capacity_primary:
             status_primary_usage = None
@@ -222,6 +221,7 @@ def _account_to_summary(
     )
     return AccountSummary(
         account_id=account.id,
+        provider=provider,
         chatgpt_account_id=account.chatgpt_account_id,
         email=account.email,
         alias=account.alias,
@@ -320,6 +320,18 @@ def _effective_status_from_usage(
         credits_unlimited=credits_unlimited,
         credits_balance=credits_balance,
     )
+    if (
+        account.status == AccountStatus.QUOTA_EXCEEDED
+        and status == AccountStatus.QUOTA_EXCEEDED
+        and account.blocked_at is not None
+    ):
+        if (
+            long_window_usage is not None
+            and _usage_entry_is_recent_enough(long_window_usage.recorded_at)
+            and long_window_used_percent is not None
+            and float(long_window_used_percent) < 100.0
+        ):
+            return AccountStatus.ACTIVE
     if account.status == AccountStatus.RATE_LIMITED and status == AccountStatus.ACTIVE:
         if runtime_reset is None and allow_missing_runtime_reset_recovery:
             return status
