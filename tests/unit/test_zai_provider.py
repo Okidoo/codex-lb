@@ -111,6 +111,7 @@ def test_zai_request_translation_consolidates_developer_and_tools() -> None:
         "name": "lookup",
         "arguments": '{"query":"codex"}',
     }
+    assert chat["messages"][2]["content"] == ""
     assert chat["messages"][3] == {
         "role": "tool",
         "tool_call_id": "call_lookup",
@@ -120,6 +121,7 @@ def test_zai_request_translation_consolidates_developer_and_tools() -> None:
         "name": "local_shell",
         "arguments": '{"command":"pwd"}',
     }
+    assert chat["messages"][4]["content"] == ""
     assert chat["tools"] == [
         {
             "type": "function",

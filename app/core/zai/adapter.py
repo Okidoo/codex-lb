@@ -384,7 +384,7 @@ def _tool_call_message(item: Mapping[str, JsonValue], *, item_type: str) -> Json
     arguments = _tool_arguments(item, item_type=item_type)
     return {
         "role": "assistant",
-        "content": None,
+        "content": "",
         "tool_calls": [
             {
                 "id": call_id,
