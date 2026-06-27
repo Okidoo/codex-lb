@@ -1315,9 +1315,24 @@ def _websocket_receive_timeout_for_pending_requests(
     *,
     proxy_request_budget_seconds: float,
     stream_idle_timeout_seconds: float,
+    response_create_started_ats: Sequence[float] | None = None,
+    response_create_timeout_seconds: float | None = None,
 ) -> _WebSocketReceiveTimeout | None:
     if not started_ats:
         return None
+
+    if response_create_started_ats and response_create_timeout_seconds is not None:
+        response_create_timeout_seconds = max(0.001, response_create_timeout_seconds)
+        oldest_response_create_started_at = min(response_create_started_ats)
+        response_create_deadline = oldest_response_create_started_at + response_create_timeout_seconds
+        remaining_response_create_timeout = _facade()._remaining_budget_seconds(response_create_deadline)
+        if remaining_response_create_timeout <= 0:
+            return _WebSocketReceiveTimeout(
+                timeout_seconds=0.0,
+                error_code="response_create_timeout",
+                error_message="Upstream did not create a response before startup timeout",
+                fail_all_pending=True,
+            )
 
     idle_timeout_seconds = max(0.001, stream_idle_timeout_seconds)
     oldest_started_at = min(started_ats)
@@ -1343,11 +1358,27 @@ def _websocket_receive_timeout_for_pending_requests(
             error_code="upstream_request_timeout",
             error_message="Proxy request budget exhausted",
         )
+    if response_create_started_ats and response_create_timeout_seconds is not None:
+        next_general_timeout = min(idle_timeout_seconds, remaining_budget)
+        if remaining_response_create_timeout < next_general_timeout:
+            return _WebSocketReceiveTimeout(
+                timeout_seconds=remaining_response_create_timeout,
+                error_code="response_create_timeout",
+                error_message="Upstream did not create a response before startup timeout",
+                fail_all_pending=True,
+            )
     if idle_timeout_seconds < remaining_budget:
         return _WebSocketReceiveTimeout(
             timeout_seconds=idle_timeout_seconds,
             error_code="stream_idle_timeout",
             error_message="Upstream stream idle timeout",
+            fail_all_pending=True,
+        )
+    if response_create_started_ats and response_create_timeout_seconds is not None:
+        return _WebSocketReceiveTimeout(
+            timeout_seconds=min(remaining_budget, remaining_response_create_timeout),
+            error_code="response_create_timeout",
+            error_message="Upstream did not create a response before startup timeout",
             fail_all_pending=True,
         )
     return _WebSocketReceiveTimeout(

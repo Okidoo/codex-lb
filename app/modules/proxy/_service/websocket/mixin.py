@@ -3354,6 +3354,7 @@ class _WebSocketMixin:
         pending_lock: anyio.Lock,
         proxy_request_budget_seconds: float,
         stream_idle_timeout_seconds: float,
+        response_create_timeout_seconds: float | None = None,
     ) -> _WebSocketReceiveTimeout | None:
         proxy = cast(_WebSocketServiceProtocol, self)
         _ = proxy
@@ -3363,10 +3364,19 @@ class _WebSocketMixin:
                 for request_state in pending_requests
                 if _http_bridge_request_counts_against_queue(request_state)
             ]
+            response_create_started_ats = [
+                request_state.started_at
+                for request_state in pending_requests
+                if _http_bridge_request_counts_against_queue(request_state)
+                and request_state.response_id is None
+                and request_state.awaiting_response_created
+            ]
         return _websocket_receive_timeout_for_pending_requests(
             started_ats,
             proxy_request_budget_seconds=proxy_request_budget_seconds,
             stream_idle_timeout_seconds=stream_idle_timeout_seconds,
+            response_create_started_ats=response_create_started_ats,
+            response_create_timeout_seconds=response_create_timeout_seconds,
         )
 
     async def _emit_pending_websocket_keepalive(

@@ -2630,6 +2630,7 @@ def _make_proxy_settings(*, log_proxy_service_tier_trace: bool) -> SimpleNamespa
         proxy_response_create_limit=64,
         proxy_compact_response_create_limit=16,
         proxy_admission_wait_timeout_seconds=10.0,
+        http_responses_session_bridge_response_create_timeout_seconds=7200.0,
         max_sse_event_bytes=16 * 1024 * 1024,
         http_responses_session_bridge_instance_id="test-instance",
         http_responses_session_bridge_instance_ring=[],
@@ -12485,6 +12486,41 @@ def test_websocket_receive_timeout_prefers_request_budget_when_sooner(monkeypatc
     assert timeout.error_message == "Proxy request budget exhausted"
 
 
+def test_websocket_receive_timeout_prefers_response_create_startup_timeout(monkeypatch):
+    monkeypatch.setattr(proxy_service.time, "monotonic", lambda: 100.0)
+
+    timeout = proxy_service._websocket_receive_timeout_for_pending_requests(
+        [10.0],
+        proxy_request_budget_seconds=7200.0,
+        stream_idle_timeout_seconds=7200.0,
+        response_create_started_ats=[10.0],
+        response_create_timeout_seconds=60.0,
+    )
+
+    assert timeout is not None
+    assert timeout.timeout_seconds == 0.0
+    assert timeout.error_code == "response_create_timeout"
+    assert timeout.error_message == "Upstream did not create a response before startup timeout"
+    assert timeout.fail_all_pending is True
+
+
+def test_websocket_receive_timeout_uses_future_response_create_deadline(monkeypatch):
+    monkeypatch.setattr(proxy_service.time, "monotonic", lambda: 100.0)
+
+    timeout = proxy_service._websocket_receive_timeout_for_pending_requests(
+        [95.0],
+        proxy_request_budget_seconds=7200.0,
+        stream_idle_timeout_seconds=7200.0,
+        response_create_started_ats=[95.0],
+        response_create_timeout_seconds=60.0,
+    )
+
+    assert timeout is not None
+    assert timeout.timeout_seconds == 55.0
+    assert timeout.error_code == "response_create_timeout"
+    assert timeout.fail_all_pending is True
+
+
 def test_websocket_receive_timeout_keeps_idle_classification_after_scheduler_jitter(monkeypatch):
     monkeypatch.setattr(proxy_service.time, "monotonic", lambda: 700.001)
 
@@ -12592,6 +12628,43 @@ async def test_next_websocket_receive_timeout_ignores_draining_requests(monkeypa
     assert timeout is not None
     assert timeout.timeout_seconds == pytest.approx(5.0)
     assert timeout.error_code == "stream_idle_timeout"
+
+
+@pytest.mark.asyncio
+async def test_next_websocket_receive_timeout_tracks_precreated_requests(monkeypatch):
+    monkeypatch.setattr(proxy_service.time, "monotonic", lambda: 100.0)
+    service = proxy_service.ProxyService(_repo_factory(_RequestLogsRecorder()))
+    created_request = proxy_service._WebSocketRequestState(
+        request_id="req_created",
+        model="gpt-5.1",
+        service_tier=None,
+        reasoning_effort=None,
+        api_key_reservation=None,
+        started_at=10.0,
+        response_id="resp_created",
+    )
+    precreated_request = proxy_service._WebSocketRequestState(
+        request_id="req_precreated",
+        model="gpt-5.1",
+        service_tier=None,
+        reasoning_effort=None,
+        api_key_reservation=None,
+        started_at=20.0,
+        awaiting_response_created=True,
+    )
+
+    timeout = await service._next_websocket_receive_timeout(
+        deque([created_request, precreated_request]),
+        pending_lock=anyio.Lock(),
+        proxy_request_budget_seconds=7200.0,
+        stream_idle_timeout_seconds=7200.0,
+        response_create_timeout_seconds=60.0,
+    )
+
+    assert timeout is not None
+    assert timeout.timeout_seconds == 0.0
+    assert timeout.error_code == "response_create_timeout"
+    assert timeout.fail_all_pending is True
 
 
 @pytest.mark.asyncio
