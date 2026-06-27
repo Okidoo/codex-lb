@@ -12,6 +12,8 @@ Resources
 
 Load balancer for ChatGPT accounts. Pool multiple accounts, track usage, manage API keys, view everything in a dashboard.
 
+This Okidoo fork keeps the upstream `codex-lb` idea intact: one OpenAI-compatible proxy endpoint for Codex and other clients, backed by a managed pool of accounts. The fork extends that pool beyond OpenAI accounts so the same Codex configuration can route GPT/Codex models to OpenAI accounts and GLM models to Z.AI coding-plan accounts. It also adds dashboard-managed model aliases, so teams can expose simple or dropdown-friendly model names while routing requests to the real upstream model behind the scenes.
+
 | ![dashboard](docs/screenshots/dashboard.jpg) | ![accounts](docs/screenshots/accounts.jpg) |
 |:---:|:---:|
 
@@ -41,6 +43,11 @@ Load balancer for ChatGPT accounts. Pool multiple accounts, track usage, manage 
 <td><b>OpenAI-compatible</b><br>Codex CLI, OpenCode, any OpenAI client</td>
 <td><b>Auto Model Sync</b><br>Available models fetched from upstream</td>
 </tr>
+<tr>
+<td><b>Provider-aware Accounts</b><br>Add OpenAI OAuth/import accounts or Z.AI API-key accounts</td>
+<td><b>GLM Routing</b><br>GLM model requests automatically use Z.AI accounts</td>
+<td><b>Model Aliases</b><br>Dashboard aliases such as <code>gpt-5.2</code> to <code>glm-5.2</code></td>
+</tr>
 </table>
 
 ## Quick Start
@@ -52,6 +59,12 @@ docker run -d --name codex-lb \
   -p 2455:2455 -p 1455:1455 \
   -v codex-lb-data:/var/lib/codex-lb \
   ghcr.io/soju06/codex-lb:latest
+
+# Okidoo fork image
+docker run -d --name codex-lb \
+  -p 2455:2455 -p 1455:1455 \
+  -v codex-lb-data:/var/lib/codex-lb \
+  docker.okidoo.co/okidoo/codex-lb:latest
 
 # or uvx
 uvx codex-lb
@@ -86,6 +99,27 @@ docker run -d --name codex-lb \
 ```
 
 **Local access** (localhost) bypasses bootstrap entirely — no token needed.
+
+## OpenAI + Z.AI Routing
+
+This fork supports two account providers behind the same `codex-lb` base URL:
+
+- **OpenAI** accounts are added with the normal OAuth flow or by importing an OpenAI `auth.json`.
+- **Z.AI** accounts are added from the dashboard with a Z.AI coding-plan API key. Use the full API secret/key value, not only the key id.
+
+Account selection is model-aware:
+
+- GPT and Codex model requests keep using OpenAI accounts.
+- GLM model requests use Z.AI accounts and are translated from OpenAI Responses requests to Z.AI Chat Completions streaming.
+- Local GLM entries include `glm-4.7`, `glm-5`, `glm-5-turbo`, `glm-5.1`, and `glm-5.2`.
+
+The dashboard includes a **Models** page for aliases. Aliases are resolved before provider selection, quota filtering, and upstream forwarding. For example, the seeded alias:
+
+```text
+gpt-5.2 -> glm-5.2
+```
+
+lets Codex or Codex Desktop select `gpt-5.2` while `codex-lb` routes the request through a Z.AI account as `glm-5.2`. This avoids patching Codex application bundles or asking every teammate to hand-edit a model catalog. Aliases can be edited, disabled, or deleted from the dashboard.
 
 ## Client Setup
 
