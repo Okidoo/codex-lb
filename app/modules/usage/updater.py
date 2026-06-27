@@ -25,7 +25,8 @@ from app.core.upstream_proxy import ResolvedUpstreamRoute, UpstreamProxyRouteErr
 from app.core.usage.models import AdditionalRateLimitPayload, UsagePayload, UsageWindow
 from app.core.utils.request_id import get_request_id
 from app.core.utils.time import utcnow
-from app.db.models import Account, AccountProvider, AccountStatus, UsageHistory
+from app.core.zai.quota import fetch_zai_usage
+from app.db.models import Account, AccountProvider, AccountStatus, UsageHistory, ZaiCredential
 from app.db.session import get_background_session
 from app.modules.accounts.auth_manager import AccountsRepositoryPort, AuthManager
 from app.modules.proxy.account_cache import get_account_selection_cache, mark_account_routing_unavailable
@@ -252,7 +253,7 @@ class UsageUpdater:
         interval = settings.usage_refresh_interval_seconds
         _prune_usage_refresh_auth_cooldowns()
         for account in accounts:
-            if not _is_openai_account(account):
+            if not _supports_usage_refresh(account):
                 continue
             if account.status in (AccountStatus.REAUTH_REQUIRED, AccountStatus.DEACTIVATED):
                 continue
@@ -374,22 +375,53 @@ class UsageUpdater:
             return None
         return await self._usage_repo.latest_entry_for_account(account.id, window="monthly")
 
+    async def _fetch_zai_usage(self, account: Account) -> UsagePayload:
+        credential = await self._get_zai_credential(account.id)
+        if credential is None:
+            raise UsageFetchError(401, "Missing Z.AI API key")
+        api_key = self._encryptor.decrypt(credential.api_key_encrypted)
+        return await fetch_zai_usage(api_key=api_key, base_url=credential.base_url)
+
+    async def _get_zai_credential(self, account_id: str) -> ZaiCredential | None:
+        if self._accounts_repo is None:
+            return None
+        getter = getattr(self._accounts_repo, "get_zai_credential", None)
+        if not callable(getter):
+            return None
+        return await getter(account_id)
+
+    async def _mark_zai_reauth_required(self, account: Account, exc: UsageFetchError) -> None:
+        reason = f"Z.AI quota API authentication failed: {exc.message}"
+        if self._accounts_repo is not None:
+            await self._accounts_repo.update_status(
+                account.id,
+                AccountStatus.REAUTH_REQUIRED,
+                deactivation_reason=reason,
+            )
+            await self._sync_account_from_repo(account)
+            return
+        account.status = AccountStatus.REAUTH_REQUIRED
+        account.deactivation_reason = reason
+
     async def _refresh_account(
         self,
         account: Account,
         *,
         usage_account_id: str | None,
     ) -> AccountRefreshResult:
-        access_token = self._encryptor.decrypt(account.access_token_encrypted)
         payload: UsagePayload | None = None
         try:
-            route = await _resolve_upstream_route_for_account(account, operation="usage_refresh")
-            payload = await fetch_usage(
-                access_token=access_token,
-                account_id=usage_account_id,
-                route=route,
-                allow_direct_egress=route is None,
-            )
+            if _is_zai_account(account):
+                payload = await self._fetch_zai_usage(account)
+            else:
+                access_token = self._encryptor.decrypt(account.access_token_encrypted)
+                route = await _resolve_upstream_route_for_account(account, operation="usage_refresh")
+                payload = await fetch_usage(
+                    access_token=access_token,
+                    account_id=usage_account_id,
+                    route=route,
+                    allow_direct_egress=route is None,
+                )
         except UpstreamProxyRouteError as exc:
             logger.warning(
                 "Usage refresh upstream proxy route unavailable account_id=%s reason=%s",
@@ -399,6 +431,12 @@ class UsageUpdater:
             _mark_usage_refresh_auth_cooldown(account.id, 0)
             return AccountRefreshResult(usage_written=False, fetch_succeeded=False)
         except UsageFetchError as exc:
+            if _is_zai_account(account):
+                if exc.status_code in {401, 403}:
+                    await self._mark_zai_reauth_required(account, exc)
+                else:
+                    _mark_usage_refresh_auth_cooldown(account.id, exc.status_code)
+                return AccountRefreshResult(usage_written=False, fetch_succeeded=False)
             if _should_deactivate_for_usage_error(exc):
                 await self._deactivate_for_client_error(account, exc)
                 return AccountRefreshResult(usage_written=False, fetch_succeeded=False)
@@ -1085,3 +1123,13 @@ def _is_openai_account(account: Account) -> bool:
     return (getattr(account, "provider", AccountProvider.OPENAI.value) or AccountProvider.OPENAI.value) == (
         AccountProvider.OPENAI.value
     )
+
+
+def _is_zai_account(account: Account) -> bool:
+    return (getattr(account, "provider", AccountProvider.OPENAI.value) or AccountProvider.OPENAI.value) == (
+        AccountProvider.ZAI.value
+    )
+
+
+def _supports_usage_refresh(account: Account) -> bool:
+    return _is_openai_account(account) or _is_zai_account(account)

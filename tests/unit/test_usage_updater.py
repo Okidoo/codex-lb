@@ -14,8 +14,8 @@ from app.core.auth.refresh import RefreshError
 from app.core.crypto import TokenEncryptor
 from app.core.upstream_proxy import ResolvedProxyEndpoint, ResolvedUpstreamRoute
 from app.core.usage import refresh_scheduler as refresh_scheduler_module
-from app.core.usage.models import UsagePayload
-from app.db.models import Account, AccountStatus, UsageHistory
+from app.core.usage.models import RateLimitPayload, UsagePayload, UsageWindow
+from app.db.models import Account, AccountProvider, AccountStatus, UsageHistory, ZaiCredential
 from app.modules.usage import updater as usage_updater_module
 from app.modules.usage.additional_quota_keys import canonicalize_additional_quota_key
 from app.modules.usage.updater import UsageUpdater
@@ -389,6 +389,61 @@ def _route() -> ResolvedUpstreamRoute:
         pool_id="pool_1",
         endpoint=ResolvedProxyEndpoint("ep_1", "http", "proxy.test", 8080),
     )
+
+
+@pytest.mark.asyncio
+async def test_usage_updater_refreshes_zai_quota_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CODEX_LB_USAGE_REFRESH_ENABLED", "true")
+    from app.core.config.settings import get_settings
+
+    get_settings.cache_clear()
+
+    account = _make_account("zai_acc", "zai_acc", email="zai@example.com")
+    account.provider = AccountProvider.ZAI.value
+    account.plan_type = "zai"
+
+    encryptor = TokenEncryptor()
+    usage_repo = StubUsageRepository(return_rows=True)
+    accounts_repo = StubAccountsRepository()
+    accounts_repo.accounts_by_id[account.id] = account
+    accounts_repo.zai_credentials[account.id] = ZaiCredential(
+        account_id=account.id,
+        api_key_encrypted=encryptor.encrypt("zai-secret"),
+        api_key_hash="hash",
+        base_url="https://api.z.ai/api/coding/paas/v4",
+    )
+
+    calls: list[dict[str, object]] = []
+
+    async def _fetch_zai_usage(**kwargs: object) -> UsagePayload:
+        calls.append(kwargs)
+        return UsagePayload(
+            plan_type="zai",
+            rate_limit=RateLimitPayload(
+                primary_window=UsageWindow(
+                    used_percent=12.0,
+                    limit_window_seconds=5 * 60 * 60,
+                ),
+                secondary_window=UsageWindow(
+                    used_percent=34.0,
+                    reset_at=1783094931,
+                    limit_window_seconds=7 * 24 * 60 * 60,
+                ),
+            ),
+        )
+
+    monkeypatch.setattr(usage_updater_module, "fetch_zai_usage", _fetch_zai_usage)
+
+    refreshed = await UsageUpdater(usage_repo, accounts_repo).refresh_accounts([account], {})
+
+    assert refreshed is True
+    assert calls == [{"api_key": "zai-secret", "base_url": "https://api.z.ai/api/coding/paas/v4"}]
+    assert [(entry.window, entry.used_percent, entry.reset_at, entry.window_minutes) for entry in usage_repo.entries] == [
+        ("primary", 12.0, None, 300),
+        ("secondary", 34.0, 1783094931, 10080),
+    ]
+    assert account.plan_type == "zai"
+    assert accounts_repo.token_updates == []
 
 
 @pytest.mark.asyncio
@@ -1458,10 +1513,14 @@ class StubAccountsRepository:
         self.status_updates: list[dict[str, Any]] = []
         self.token_updates: list[dict[str, Any]] = []
         self.accounts_by_id: dict[str, Account] = {}
+        self.zai_credentials: dict[str, ZaiCredential] = {}
         self.taken_workspace_slots: set[tuple[str, str | None, str]] = set()
 
     async def get_by_id(self, account_id: str) -> Account | None:
         return self.accounts_by_id.get(account_id)
+
+    async def get_zai_credential(self, account_id: str) -> ZaiCredential | None:
+        return self.zai_credentials.get(account_id)
 
     async def update_status(
         self,

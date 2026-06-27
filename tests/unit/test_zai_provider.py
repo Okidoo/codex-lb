@@ -10,11 +10,45 @@ import pytest
 
 from app.core.openai.model_registry import ModelRegistry
 from app.core.zai.adapter import iter_zai_response_events, responses_to_zai_chat
+from app.core.zai.quota import usage_payload_from_zai_quota
 from app.db.models import Account, AccountProvider, AccountStatus
 from app.modules.accounts.auth_manager import AuthManager
 from app.modules.proxy.load_balancer import _filter_accounts_for_provider, _provider_for_model
 from app.modules.usage import updater as usage_updater_module
 from app.modules.usage.updater import UsageUpdater
+
+
+def test_zai_quota_payload_maps_token_windows() -> None:
+    payload = usage_payload_from_zai_quota(
+        {
+            "code": 200,
+            "success": True,
+            "data": {
+                "level": "lite",
+                "limits": [
+                    {"type": "TIME_LIMIT", "unit": 5, "number": 1, "percentage": 0},
+                    {"type": "TOKENS_LIMIT", "unit": 3, "number": 5, "percentage": 12.5},
+                    {
+                        "type": "TOKENS_LIMIT",
+                        "unit": 6,
+                        "number": 1,
+                        "percentage": 34,
+                        "nextResetTime": 1783094931996,
+                    },
+                ],
+            },
+        }
+    )
+
+    assert payload.plan_type == "zai"
+    assert payload.rate_limit is not None
+    assert payload.rate_limit.primary_window is not None
+    assert payload.rate_limit.primary_window.used_percent == 12.5
+    assert payload.rate_limit.primary_window.limit_window_seconds == 5 * 60 * 60
+    assert payload.rate_limit.secondary_window is not None
+    assert payload.rate_limit.secondary_window.used_percent == 34
+    assert payload.rate_limit.secondary_window.limit_window_seconds == 7 * 24 * 60 * 60
+    assert payload.rate_limit.secondary_window.reset_at == 1783094931
 
 
 def test_zai_request_translation_consolidates_developer_and_tools() -> None:
