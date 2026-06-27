@@ -2,18 +2,21 @@ from __future__ import annotations
 
 import json
 import time
-from collections.abc import AsyncIterator, Iterable, Mapping
-from typing import Any, cast
+from collections.abc import AsyncIterator, Mapping
+from typing import Any
 from uuid import uuid4
 
 import aiohttp
 
 from app.core.clients.proxy import ProxyResponseError
 from app.core.errors import openai_error
+from app.core.model_aliases import ModelAliasMapping
 from app.core.openai.requests import ResponsesRequest
 from app.core.types import JsonObject, JsonValue
 from app.core.utils.json_guards import is_json_list, is_json_mapping
 from app.core.utils.sse import format_sse_event
+from app.core.zai.models import canonical_zai_model
+from app.core.zai.models import is_zai_model as _is_zai_model
 
 ZAI_PROVIDER = "zai"
 ZAI_DEFAULT_BASE_URL = "https://api.z.ai/api/coding/paas/v4"
@@ -41,15 +44,22 @@ _TOOL_CALL_TYPES = frozenset(
 type MutableJsonObject = dict[str, Any]
 
 
-def is_zai_model(model: str | None) -> bool:
-    return isinstance(model, str) and model.strip().lower().startswith("glm-")
+def is_zai_model(model: str | None, model_aliases: ModelAliasMapping | None = None) -> bool:
+    return _is_zai_model(model, model_aliases)
 
 
-def responses_to_zai_chat(payload: ResponsesRequest | Mapping[str, JsonValue]) -> JsonObject:
+def responses_to_zai_chat(
+    payload: ResponsesRequest | Mapping[str, JsonValue],
+    *,
+    model_aliases: ModelAliasMapping | None = None,
+) -> JsonObject:
     payload_dict = _payload_to_dict(payload)
     model = payload_dict.get("model")
     if not isinstance(model, str) or not model.strip():
         raise ValueError("Z.AI requests require a model")
+    canonical_model = canonical_zai_model(model, model_aliases)
+    if canonical_model is None:
+        raise ValueError("Z.AI requests require a GLM-compatible model")
 
     system_parts: list[str] = []
     instructions = payload_dict.get("instructions")
@@ -61,7 +71,7 @@ def responses_to_zai_chat(payload: ResponsesRequest | Mapping[str, JsonValue]) -
         messages.insert(0, {"role": "system", "content": "\n\n".join(system_parts)})
 
     chat_payload: MutableJsonObject = {
-        "model": model,
+        "model": canonical_model,
         "messages": messages,
         "stream": True,
     }
@@ -98,8 +108,9 @@ async def stream_zai_responses(
     session: aiohttp.ClientSession | None = None,
     timeout: aiohttp.ClientTimeout | None = None,
     raise_for_status: bool = True,
+    model_aliases: ModelAliasMapping | None = None,
 ) -> AsyncIterator[str]:
-    chat_payload = responses_to_zai_chat(payload)
+    chat_payload = responses_to_zai_chat(payload, model_aliases=model_aliases)
     endpoint = f"{(base_url or ZAI_DEFAULT_BASE_URL).rstrip('/')}{ZAI_CHAT_COMPLETIONS_PATH}"
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -617,7 +628,11 @@ async def _iter_sse_data(content: aiohttp.StreamReader) -> AsyncIterator[str]:
 
 
 def _next_sse_separator(buffer: str) -> tuple[int, int] | None:
-    candidates = [(idx, len(separator)) for separator in ("\r\n\r\n", "\n\n", "\r\r") if (idx := buffer.find(separator)) >= 0]
+    candidates = [
+        (idx, len(separator))
+        for separator in ("\r\n\r\n", "\n\n", "\r\r")
+        if (idx := buffer.find(separator)) >= 0
+    ]
     if not candidates:
         return None
     return min(candidates, key=lambda item: item[0])

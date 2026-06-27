@@ -60,6 +60,7 @@ from app.modules.api_keys.service import (
     ApiKeyData,
     ApiKeyUsageReservationData,
 )
+from app.modules.proxy.model_aliases import load_model_aliases
 from app.modules.proxy._service.api_key_usage import (
     _API_KEY_RESERVATION_HEARTBEAT_SECONDS as _API_KEY_RESERVATION_HEARTBEAT_SECONDS,
 )
@@ -558,12 +559,14 @@ class _StreamingMixin(_StreamingRetryMixin):
                         )
                     zai_api_key_encrypted = zai_credential.api_key_encrypted
                     zai_base_url = zai_credential.base_url
+                    zai_model_aliases = await load_model_aliases(repos, logger=_facade().logger)
                 zai_api_key = proxy._encryptor.decrypt(zai_api_key_encrypted)
                 stream = stream_zai_responses(
                     payload,
                     api_key=zai_api_key,
                     base_url=zai_base_url,
                     raise_for_status=True,
+                    model_aliases=zai_model_aliases,
                 )
             elif upstream_stream_transport is not None:
                 stream = _facade()._call_stream_with_supported_optional_kwargs(

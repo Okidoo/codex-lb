@@ -27,6 +27,8 @@ from app.modules.dashboard_auth.service import (
 from app.modules.firewall.repository import FirewallRepository
 from app.modules.firewall.service import FirewallRepositoryPort, FirewallService
 from app.modules.limit_warmup.repository import LimitWarmupRepository
+from app.modules.model_aliases.repository import ModelAliasesRepository
+from app.modules.model_aliases.service import ModelAliasesService
 from app.modules.oauth.service import OauthService
 from app.modules.proxy.repo_bundle import ProxyRepositories
 from app.modules.proxy.service import ProxyService
@@ -86,6 +88,13 @@ class ApiKeysContext:
     session: AsyncSession
     repository: ApiKeysRepository
     service: ApiKeysService
+
+
+@dataclass(slots=True)
+class ModelAliasesContext:
+    session: AsyncSession
+    repository: ModelAliasesRepository
+    service: ModelAliasesService
 
 
 @dataclass(slots=True)
@@ -201,6 +210,7 @@ async def _proxy_repo_context() -> AsyncIterator[ProxyRepositories]:
             api_keys=ApiKeysRepository(session),
             additional_usage=AdditionalUsageRepository(session),
             quota_planner=QuotaPlannerRepository(session),
+            model_aliases=ModelAliasesRepository(session),
         )
 
 
@@ -217,6 +227,14 @@ def get_dashboard_auth_context(
     repository = DashboardAuthRepository(session)
     service = DashboardAuthService(cast(DashboardAuthRepositoryProtocol, repository), get_dashboard_session_store())
     return DashboardAuthContext(session=session, repository=repository, service=service)
+
+
+def get_model_aliases_context(
+    session: AsyncSession = Depends(get_session),
+) -> ModelAliasesContext:
+    repository = ModelAliasesRepository(session)
+    service = ModelAliasesService(repository)
+    return ModelAliasesContext(session=session, repository=repository, service=service)
 
 
 def get_proxy_context(request: Request) -> ProxyContext:

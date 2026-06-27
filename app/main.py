@@ -51,6 +51,7 @@ from app.modules.dashboard import api as dashboard_api
 from app.modules.dashboard_auth import api as dashboard_auth_api
 from app.modules.firewall import api as firewall_api
 from app.modules.health import api as health_api
+from app.modules.model_aliases import api as model_aliases_api
 from app.modules.oauth import api as oauth_api
 from app.modules.proxy import api as proxy_api
 from app.modules.proxy.durable_bridge_repository import missing_durable_bridge_tables
@@ -397,6 +398,7 @@ def create_app() -> FastAPI:
     app.include_router(oauth_api.router)
     app.include_router(dashboard_auth_api.router)
     app.include_router(settings_api.router)
+    app.include_router(model_aliases_api.router)
     app.include_router(firewall_api.router)
     app.include_router(sticky_sessions_api.router)
     app.include_router(api_keys_api.router)

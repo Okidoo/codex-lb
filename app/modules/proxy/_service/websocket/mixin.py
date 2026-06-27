@@ -68,7 +68,8 @@ from app.core.utils.request_id import get_request_id
 from app.core.utils.sse import CODEX_KEEPALIVE_FRAME as CODEX_KEEPALIVE_FRAME  # noqa: F401
 from app.core.utils.sse import format_sse_event, parse_sse_data_json
 from app.core.utils.time import utcnow as utcnow
-from app.core.zai.adapter import is_zai_model, stream_zai_responses
+from app.core.zai.adapter import stream_zai_responses
+from app.core.zai.models import is_zai_model
 from app.db.models import (
     Account,
     AccountProvider,
@@ -80,6 +81,7 @@ from app.modules.api_keys.service import (
     ApiKeyInvalidError,
     ApiKeysService,
 )
+from app.modules.proxy.model_aliases import load_model_aliases
 from app.modules.proxy._service.api_key_usage import (
     _API_KEY_RESERVATION_HEARTBEAT_SECONDS as _API_KEY_RESERVATION_HEARTBEAT_SECONDS,
 )
@@ -951,10 +953,15 @@ class _WebSocketMixin:
                                 )
                             )
                         continue
+                websocket_model_aliases: dict[str, str] = {}
+                if request_state is not None and responses_payload is not None:
+                    async with proxy._repo_factory() as repos:
+                        websocket_model_aliases = await load_model_aliases(repos, logger=_facade().logger)
+
                 if (
                     request_state is not None
                     and responses_payload is not None
-                    and _websocket_payload_uses_zai(responses_payload)
+                    and _websocket_payload_uses_zai(responses_payload, websocket_model_aliases)
                 ):
                     zai_deadline = _websocket_connect_deadline(
                         request_state,
@@ -2734,12 +2741,14 @@ class _WebSocketMixin:
                     )
                 zai_api_key_encrypted = zai_credential.api_key_encrypted
                 zai_base_url = zai_credential.base_url
+                zai_model_aliases = await load_model_aliases(repos, logger=_facade().logger)
             zai_api_key = proxy._encryptor.decrypt(zai_api_key_encrypted)
             async for event_block in stream_zai_responses(
                 responses_payload,
                 api_key=zai_api_key,
                 base_url=zai_base_url,
                 raise_for_status=True,
+                model_aliases=zai_model_aliases,
             ):
                 await proxy._send_zai_websocket_event_block(
                     event_block,
@@ -3985,5 +3994,5 @@ class _WebSocketMixin:
                 downstream_activity.mark()
 
 
-def _websocket_payload_uses_zai(payload: ResponsesRequest) -> bool:
-    return is_zai_model(payload.model)
+def _websocket_payload_uses_zai(payload: ResponsesRequest, aliases: Mapping[str, str] | None = None) -> bool:
+    return is_zai_model(payload.model, aliases)
