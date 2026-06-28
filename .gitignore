@@ -39,6 +39,7 @@ frontend/coverage/
 
 # Local
 .local/
+.local-dev/
 .worktrees/
 certs/
 

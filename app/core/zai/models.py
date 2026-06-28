@@ -1,16 +1,11 @@
-from __future__ import annotations
-
-from app.core.model_aliases import ModelAliasMapping, resolve_model_alias
-
-
-def canonical_zai_model(model: str | None, aliases: ModelAliasMapping | None = None) -> str | None:
-    resolved = resolve_model_alias(model, aliases)
-    if resolved is None:
+def canonical_zai_model(model: str | None) -> str | None:
+    if not isinstance(model, str):
         return None
-    if resolved.startswith("glm-"):
-        return resolved
+    candidate = model.strip().lower()
+    if candidate.startswith("glm-"):
+        return candidate
     return None
 
 
-def is_zai_model(model: str | None, aliases: ModelAliasMapping | None = None) -> bool:
-    return canonical_zai_model(model, aliases) is not None
+def is_zai_model(model: str | None) -> bool:
+    return canonical_zai_model(model) is not None

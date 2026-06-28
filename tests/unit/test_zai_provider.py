@@ -8,16 +8,54 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from app.core.model_aliases import resolve_model_alias
 from app.core.openai.model_registry import ModelRegistry
 from app.core.zai.adapter import iter_zai_response_events, responses_to_zai_chat
-from app.core.zai.models import canonical_zai_model, is_zai_model
 from app.core.zai.quota import usage_payload_from_zai_quota
 from app.db.models import Account, AccountProvider, AccountStatus
 from app.modules.accounts.auth_manager import AuthManager
 from app.modules.proxy.load_balancer import _filter_accounts_for_provider, _provider_for_model
 from app.modules.usage import updater as usage_updater_module
 from app.modules.usage.updater import UsageUpdater
+
+
+def test_zai_request_rewrites_codex_gpt_identity_and_maps_reasoning() -> None:
+    chat_payload = responses_to_zai_chat(
+        {
+            "model": "glm-5.2",
+            "instructions": "You are Codex, a coding agent based on GPT-5.\nStay concise.",
+            "input": "hello",
+            "reasoning": {"effort": "xhigh"},
+        }
+    )
+
+    chat = cast(dict[str, Any], chat_payload)
+    system_message = cast(dict[str, Any], chat["messages"][0])
+    assert "GPT-5" not in cast(str, system_message["content"])
+    assert "OpenAI" in cast(str, system_message["content"])
+    assert "upstream model is glm-5.2" in cast(str, system_message["content"])
+    assert chat["reasoning_effort"] == "max"
+
+
+def test_zai_request_rewrites_current_codex_gpt_identity() -> None:
+    instructions = (
+        "You are GPT-5.2 running in the Codex CLI, a terminal-based coding assistant.\n"
+        "Stay concise."
+    )
+    chat_payload = responses_to_zai_chat(
+        {
+            "model": "glm-5.2",
+            "instructions": instructions,
+            "input": "hello",
+        }
+    )
+
+    chat = cast(dict[str, Any], chat_payload)
+    system_message = cast(dict[str, Any], chat["messages"][0])
+    content = cast(str, system_message["content"])
+    assert "GPT-5.2" not in content
+    assert "running in the Codex CLI" not in content
+    assert "upstream model is glm-5.2" in content
+    assert "Stay concise." in content
 
 
 def test_zai_quota_payload_maps_token_windows() -> None:
@@ -102,6 +140,7 @@ def test_zai_request_translation_consolidates_developer_and_tools() -> None:
     chat = cast(dict[str, Any], chat_payload)
     assert chat["model"] == "glm-5.1"
     assert chat["stream"] is True
+    assert chat["reasoning_effort"] == "high"
     assert chat["messages"][0] == {
         "role": "system",
         "content": "base instructions\n\ndeveloper policy",
@@ -135,18 +174,6 @@ def test_zai_request_translation_consolidates_developer_and_tools() -> None:
     ]
     for unsupported in ("reasoning", "service_tier", "previous_response_id", "prompt_cache_key"):
         assert unsupported not in chat
-
-
-def test_gpt_52_alias_routes_to_glm_52() -> None:
-    aliases = {"gpt-5.2": "glm-5.2"}
-    chat_payload = responses_to_zai_chat({"model": "gpt-5.2", "input": "hello"}, model_aliases=aliases)
-    chat = cast(dict[str, Any], chat_payload)
-
-    assert resolve_model_alias("gpt-5.2", aliases) == "glm-5.2"
-    assert canonical_zai_model("gpt-5.2", aliases) == "glm-5.2"
-    assert is_zai_model("gpt-5.2") is False
-    assert is_zai_model("gpt-5.2", aliases) is True
-    assert chat["model"] == "glm-5.2"
 
 
 @pytest.mark.asyncio
@@ -249,7 +276,6 @@ def test_provider_filtering_routes_glm_to_zai_accounts() -> None:
 
     assert _provider_for_model("glm-5.1") == AccountProvider.ZAI.value
     assert _provider_for_model("gpt-5.2") == AccountProvider.OPENAI.value
-    assert _provider_for_model("gpt-5.2", {"gpt-5.2": "glm-5.2"}) == AccountProvider.ZAI.value
     assert _provider_for_model("gpt-5.1") == AccountProvider.OPENAI.value
     assert _filter_accounts_for_provider([openai_account, zai_account], AccountProvider.ZAI.value) == [
         zai_account

@@ -6,7 +6,6 @@ from typing import AsyncContextManager
 
 from app.modules.accounts.repository import AccountsRepository
 from app.modules.api_keys.repository import ApiKeysRepository
-from app.modules.model_aliases.repository import ModelAliasesRepository
 from app.modules.proxy.sticky_repository import StickySessionsRepository
 from app.modules.quota_planner.repository import QuotaPlannerRepository
 from app.modules.request_logs.repository import RequestLogsRepository
@@ -22,7 +21,6 @@ class ProxyRepositories:
     api_keys: ApiKeysRepository
     additional_usage: AdditionalUsageRepository
     quota_planner: QuotaPlannerRepository | None = None
-    model_aliases: ModelAliasesRepository | None = None
 
 
 ProxyRepoFactory = Callable[[], AsyncContextManager[ProxyRepositories]]

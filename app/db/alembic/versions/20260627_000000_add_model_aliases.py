@@ -12,12 +12,12 @@ import uuid
 import sqlalchemy as sa
 from alembic import op
 
-from app.core.model_aliases import DEFAULT_MODEL_ALIAS_SOURCE, DEFAULT_MODEL_ALIAS_TARGET
-
 revision = "20260627_000000_add_model_aliases"
 down_revision = "20260626_020000_add_zai_provider_accounts"
 branch_labels = None
 depends_on = None
+DEFAULT_MODEL_ALIAS_SOURCE = "gpt-5.2"
+DEFAULT_MODEL_ALIAS_TARGET = "glm-5.2"
 
 
 def _has_table(table_name: str) -> bool:

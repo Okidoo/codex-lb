@@ -72,7 +72,6 @@ from app.core.zai.adapter import stream_zai_responses
 from app.core.zai.models import is_zai_model
 from app.db.models import (
     Account,
-    AccountProvider,
     AccountStatus,  # noqa: F401
     StickySessionKind,
 )
@@ -81,7 +80,6 @@ from app.modules.api_keys.service import (
     ApiKeyInvalidError,
     ApiKeysService,
 )
-from app.modules.proxy.model_aliases import load_model_aliases
 from app.modules.proxy._service.api_key_usage import (
     _API_KEY_RESERVATION_HEARTBEAT_SECONDS as _API_KEY_RESERVATION_HEARTBEAT_SECONDS,
 )
@@ -953,15 +951,10 @@ class _WebSocketMixin:
                                 )
                             )
                         continue
-                websocket_model_aliases: dict[str, str] = {}
-                if request_state is not None and responses_payload is not None:
-                    async with proxy._repo_factory() as repos:
-                        websocket_model_aliases = await load_model_aliases(repos, logger=_facade().logger)
-
                 if (
                     request_state is not None
                     and responses_payload is not None
-                    and _websocket_payload_uses_zai(responses_payload, websocket_model_aliases)
+                    and _websocket_payload_uses_zai(responses_payload)
                 ):
                     zai_deadline = _websocket_connect_deadline(
                         request_state,
@@ -1043,7 +1036,9 @@ class _WebSocketMixin:
                     active_upstream = upstream
                     account_lease = request_state.websocket_stream_lease
                     request_state.websocket_stream_lease = None
-                    upstream_turn_state = _facade()._upstream_turn_state_from_socket(active_upstream) or upstream_turn_state
+                    upstream_turn_state = (
+                        _facade()._upstream_turn_state_from_socket(active_upstream) or upstream_turn_state
+                    )
                     upstream_control = _WebSocketUpstreamControl()
                     upstream_reader = asyncio.create_task(
                         proxy._relay_upstream_websocket_messages(
@@ -2779,30 +2774,28 @@ class _WebSocketMixin:
                     )
                 zai_api_key_encrypted = zai_credential.api_key_encrypted
                 zai_base_url = zai_credential.base_url
-                zai_model_aliases = await load_model_aliases(repos, logger=_facade().logger)
-            zai_api_key = proxy._encryptor.decrypt(zai_api_key_encrypted)
-            async for event_block in stream_zai_responses(
-                responses_payload,
-                api_key=zai_api_key,
-                base_url=zai_base_url,
-                raise_for_status=True,
-                model_aliases=zai_model_aliases,
-            ):
-                await proxy._send_zai_websocket_event_block(
-                    event_block,
-                    websocket=websocket,
-                    account=account,
-                    request_state=request_state,
-                    pending_requests=pending_requests,
-                    pending_lock=pending_lock,
-                    client_send_lock=client_send_lock,
-                    api_key=api_key,
-                    upstream_control=upstream_control,
-                    response_create_gate=response_create_gate,
-                    continuity_state=continuity_state,
-                    downstream_activity=downstream_activity,
-                    codex_session_affinity=codex_session_affinity,
-                )
+                zai_api_key = proxy._encryptor.decrypt(zai_api_key_encrypted)
+                async for event_block in stream_zai_responses(
+                    responses_payload,
+                    api_key=zai_api_key,
+                    base_url=zai_base_url,
+                    raise_for_status=True,
+                ):
+                    await proxy._send_zai_websocket_event_block(
+                        event_block,
+                        websocket=websocket,
+                        account=account,
+                        request_state=request_state,
+                        pending_requests=pending_requests,
+                        pending_lock=pending_lock,
+                        client_send_lock=client_send_lock,
+                        api_key=api_key,
+                        upstream_control=upstream_control,
+                        response_create_gate=response_create_gate,
+                        continuity_state=continuity_state,
+                        downstream_activity=downstream_activity,
+                        codex_session_affinity=codex_session_affinity,
+                    )
         except ProxyResponseError as exc:
             error = _parse_openai_error(exc.payload)
             error_code = _normalize_error_code(error.code if error else None, error.type if error else None)
@@ -2871,7 +2864,11 @@ class _WebSocketMixin:
         suppress_downstream_event = upstream_control.suppress_downstream_event
         upstream_control.downstream_texts = None
         upstream_control.suppress_downstream_event = False
-        texts = downstream_texts if downstream_texts is not None else ([] if suppress_downstream_event else [downstream_text])
+        texts = (
+            downstream_texts
+            if downstream_texts is not None
+            else ([] if suppress_downstream_event else [downstream_text])
+        )
         for emitted_text in texts:
             try:
                 await proxy._send_downstream_websocket_text(
@@ -4042,5 +4039,5 @@ class _WebSocketMixin:
                 downstream_activity.mark()
 
 
-def _websocket_payload_uses_zai(payload: ResponsesRequest, aliases: Mapping[str, str] | None = None) -> bool:
-    return is_zai_model(payload.model, aliases)
+def _websocket_payload_uses_zai(payload: ResponsesRequest) -> bool:
+    return is_zai_model(payload.model)

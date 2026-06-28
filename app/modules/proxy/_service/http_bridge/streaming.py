@@ -55,7 +55,6 @@ from app.modules.api_keys.service import (
     ApiKeyData,
     ApiKeyUsageReservationData,
 )
-from app.modules.proxy.model_aliases import load_model_aliases
 from app.modules.proxy._service.api_key_usage import (
     _API_KEY_RESERVATION_HEARTBEAT_SECONDS as _API_KEY_RESERVATION_HEARTBEAT_SECONDS,
 )
@@ -349,12 +348,7 @@ class _HTTPBridgeStreamingMixin:
                 request_id,
             )
             runtime_config = dataclasses.replace(runtime_config, enabled=False)
-        http_bridge_model_aliases: dict[str, str] = {}
-        if runtime_config.enabled:
-            async with self._repo_factory() as repos:
-                http_bridge_model_aliases = await load_model_aliases(repos, logger=logger)
-
-        if runtime_config.enabled and is_zai_model(payload.model, http_bridge_model_aliases):
+        if runtime_config.enabled and is_zai_model(payload.model):
             logger.info(
                 "stream_responses bypassing http bridge for Z.AI model request_id=%s model=%s",
                 request_id,

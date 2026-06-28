@@ -46,12 +46,12 @@ from app.modules.accounts import api as accounts_api
 from app.modules.api_keys import api as api_keys_api
 from app.modules.api_keys.reset_scheduler import build_api_key_limit_reset_scheduler
 from app.modules.audit import api as audit_api
+from app.modules.codex_setup import api as codex_setup_api
 from app.modules.conversation_archive import api as conversation_archive_api
 from app.modules.dashboard import api as dashboard_api
 from app.modules.dashboard_auth import api as dashboard_auth_api
 from app.modules.firewall import api as firewall_api
 from app.modules.health import api as health_api
-from app.modules.model_aliases import api as model_aliases_api
 from app.modules.oauth import api as oauth_api
 from app.modules.proxy import api as proxy_api
 from app.modules.proxy.durable_bridge_repository import missing_durable_bridge_tables
@@ -398,17 +398,17 @@ def create_app() -> FastAPI:
     app.include_router(oauth_api.router)
     app.include_router(dashboard_auth_api.router)
     app.include_router(settings_api.router)
-    app.include_router(model_aliases_api.router)
     app.include_router(firewall_api.router)
     app.include_router(sticky_sessions_api.router)
     app.include_router(api_keys_api.router)
+    app.include_router(codex_setup_api.router)
     app.include_router(health_api.router)
 
     static_dir = Path(__file__).parent / "static"
     index_html = static_dir / "index.html"
     static_root = static_dir.resolve()
     frontend_build_hint = "Frontend assets are missing. Run `cd frontend && bun run build`."
-    excluded_prefixes = ("api/", "v1/", "backend-api/", "health")
+    excluded_prefixes = ("api/", "v1/", "backend-api/", "codex/", "health")
 
     def _is_static_asset_path(path: str) -> bool:
         if path.startswith("assets/"):

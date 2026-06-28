@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from collections.abc import AsyncIterator, Mapping
 from typing import Any
@@ -10,7 +11,6 @@ import aiohttp
 
 from app.core.clients.proxy import ProxyResponseError
 from app.core.errors import openai_error
-from app.core.model_aliases import ModelAliasMapping
 from app.core.openai.requests import ResponsesRequest
 from app.core.types import JsonObject, JsonValue
 from app.core.utils.json_guards import is_json_list, is_json_mapping
@@ -21,6 +21,23 @@ from app.core.zai.models import is_zai_model as _is_zai_model
 ZAI_PROVIDER = "zai"
 ZAI_DEFAULT_BASE_URL = "https://api.z.ai/api/coding/paas/v4"
 ZAI_CHAT_COMPLETIONS_PATH = "/chat/completions"
+_CODEX_GPT_IDENTITY_LINE = "You are Codex, a coding agent based on GPT-5."
+_CODEX_GPT_IDENTITY_PATTERNS = (
+    re.compile(re.escape(_CODEX_GPT_IDENTITY_LINE)),
+    re.compile(
+        r"\bYou are GPT-\d+(?:\.\d+)?(?:[-\w]*)?[^.\n]*(?:Codex CLI|coding assistant)[^.\n]*\.",
+        re.IGNORECASE,
+    ),
+)
+_ZAI_REASONING_EFFORT_MAP = {
+    "none": "none",
+    "minimal": "none",
+    "low": "high",
+    "medium": "high",
+    "high": "high",
+    "xhigh": "max",
+    "max": "max",
+}
 
 _TEXT_PART_TYPES = frozenset({"text", "input_text", "output_text", "refusal"})
 _TOOL_OUTPUT_TYPES = frozenset(
@@ -44,20 +61,18 @@ _TOOL_CALL_TYPES = frozenset(
 type MutableJsonObject = dict[str, Any]
 
 
-def is_zai_model(model: str | None, model_aliases: ModelAliasMapping | None = None) -> bool:
-    return _is_zai_model(model, model_aliases)
+def is_zai_model(model: str | None) -> bool:
+    return _is_zai_model(model)
 
 
 def responses_to_zai_chat(
     payload: ResponsesRequest | Mapping[str, JsonValue],
-    *,
-    model_aliases: ModelAliasMapping | None = None,
 ) -> JsonObject:
     payload_dict = _payload_to_dict(payload)
     model = payload_dict.get("model")
     if not isinstance(model, str) or not model.strip():
         raise ValueError("Z.AI requests require a model")
-    canonical_model = canonical_zai_model(model, model_aliases)
+    canonical_model = canonical_zai_model(model)
     if canonical_model is None:
         raise ValueError("Z.AI requests require a GLM-compatible model")
 
@@ -68,7 +83,8 @@ def responses_to_zai_chat(
 
     messages = _messages_from_input(payload_dict.get("input"), system_parts)
     if system_parts:
-        messages.insert(0, {"role": "system", "content": "\n\n".join(system_parts)})
+        system_content = _rewrite_zai_system_prompt("\n\n".join(system_parts), canonical_model)
+        messages.insert(0, {"role": "system", "content": system_content})
 
     chat_payload: MutableJsonObject = {
         "model": canonical_model,
@@ -88,6 +104,9 @@ def responses_to_zai_chat(
     max_output_tokens = payload_dict.get("max_output_tokens")
     if isinstance(max_output_tokens, int) and max_output_tokens > 0:
         chat_payload["max_completion_tokens"] = max_output_tokens
+    reasoning_effort = _zai_reasoning_effort(payload_dict.get("reasoning"))
+    if reasoning_effort is not None:
+        chat_payload["reasoning_effort"] = reasoning_effort
 
     text_controls = payload_dict.get("text")
     if is_json_mapping(text_controls):
@@ -108,9 +127,8 @@ async def stream_zai_responses(
     session: aiohttp.ClientSession | None = None,
     timeout: aiohttp.ClientTimeout | None = None,
     raise_for_status: bool = True,
-    model_aliases: ModelAliasMapping | None = None,
 ) -> AsyncIterator[str]:
-    chat_payload = responses_to_zai_chat(payload, model_aliases=model_aliases)
+    chat_payload = responses_to_zai_chat(payload)
     endpoint = f"{(base_url or ZAI_DEFAULT_BASE_URL).rstrip('/')}{ZAI_CHAT_COMPLETIONS_PATH}"
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -310,6 +328,26 @@ def _payload_to_dict(payload: ResponsesRequest | Mapping[str, JsonValue]) -> Mut
     if isinstance(payload, ResponsesRequest):
         return payload.model_dump(exclude_none=True)
     return dict(payload)
+
+
+def _rewrite_zai_system_prompt(content: str, model: str) -> str:
+    replacement = (
+        f"You are a coding agent running via codex-lb. "
+        f"The upstream model is {model}; do not claim to be an OpenAI model."
+    )
+    rewritten = content
+    for pattern in _CODEX_GPT_IDENTITY_PATTERNS:
+        rewritten = pattern.sub(replacement, rewritten, count=1)
+    return rewritten
+
+
+def _zai_reasoning_effort(reasoning: JsonValue | None) -> str | None:
+    if not is_json_mapping(reasoning):
+        return None
+    effort = reasoning.get("effort")
+    if not isinstance(effort, str):
+        return None
+    return _ZAI_REASONING_EFFORT_MAP.get(effort.strip().lower())
 
 
 def _messages_from_input(input_value: JsonValue | None, system_parts: list[str]) -> list[JsonObject]:

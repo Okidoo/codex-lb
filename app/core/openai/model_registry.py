@@ -188,10 +188,11 @@ _ZAI_MODELS: tuple[UpstreamModel, ...] = (
         prefer_websockets=False,
         minimal_client_version=None,
         input_modalities=("text",),
+        context_window=1_048_576,
         default_reasoning_level=None,
         default_verbosity=None,
         available_in_plans=_ZAI_AVAILABLE_IN_PLANS,
-        raw={"provider": "zai"},
+        raw={"provider": "zai", "max_output_tokens": 131_072},
     ),
 )
 _LOCAL_PROVIDER_MODELS: dict[str, UpstreamModel] = {model.slug: model for model in _ZAI_MODELS}

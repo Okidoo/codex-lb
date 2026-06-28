@@ -9,7 +9,7 @@ import { useAuthStore } from "@/features/auth/hooks/use-auth";
 import { AccountsPage } from "@/features/accounts/components/accounts-page";
 import { ApisPage } from "@/features/apis/components/apis-page";
 import { DashboardPage } from "@/features/dashboard/components/dashboard-page";
-import { ModelAliasesPage } from "@/features/model-aliases/components/model-aliases-page";
+import { CodexSetupPage } from "@/features/codex-setup/components/codex-setup-page";
 import { ReportsPage } from "@/features/reports/components/reports-page";
 import { SettingsPage } from "@/features/settings/components/settings-page";
 import { useTimeFormatStore } from "@/hooks/use-time-format";
@@ -52,7 +52,7 @@ export default function App() {
             <Route path="/dashboard" element={<DashboardPage />} />
             <Route path="/reports" element={<ReportsPage />} />
             <Route path="/accounts" element={<AccountsPage />} />
-            <Route path="/models" element={<ModelAliasesPage />} />
+						<Route path="/models" element={<CodexSetupPage />} />
             <Route path="/apis" element={<ApisPage />} />
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="/firewall" element={<Navigate to="/settings" replace />} />

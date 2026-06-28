@@ -37,7 +37,6 @@ from app.core.balancer.types import UpstreamError
 from app.core.config import settings as config_settings
 from app.core.config.settings import get_settings
 from app.core.config.settings_cache import get_settings_cache
-from app.core.model_aliases import ModelAliasMapping, resolve_model_alias
 from app.core.metrics.prometheus import (
     PROMETHEUS_AVAILABLE,
     account_cap_rejections_total,
@@ -63,7 +62,6 @@ from app.db.models import (
 )
 from app.modules.proxy.account_cache import get_account_selection_cache, mark_account_routing_unavailable
 from app.modules.proxy.additional_model_limits import get_additional_quota_key_for_model_id
-from app.modules.proxy.model_aliases import load_model_aliases
 from app.modules.proxy.repo_bundle import ProxyRepoFactory, ProxyRepositories
 from app.modules.quota_planner.logic import PlannerSettings, build_routing_costs
 from app.modules.usage.additional_quota_keys import (
@@ -809,8 +807,7 @@ class LoadBalancer:
         load_generation = self._selection_inputs_cache.generation
 
         async with self._repo_factory() as repos:
-            model_aliases = await load_model_aliases(repos, logger=logger)
-            effective_model = resolve_model_alias(model, model_aliases)
+            effective_model = model
             all_accounts = await repos.accounts.list_accounts()
             quota_planner_repo = getattr(repos, "quota_planner", None)
             get_quota_planner_settings = getattr(quota_planner_repo, "get_settings", None)
@@ -836,7 +833,7 @@ class LoadBalancer:
             if account_ids is not None:
                 allowed_account_ids = set(account_ids)
                 accounts = [account for account in accounts if account.id in allowed_account_ids]
-            required_provider = _provider_for_model(model, model_aliases)
+            required_provider = _provider_for_model(model)
             if required_provider is not None:
                 accounts = _filter_accounts_for_provider(accounts, required_provider)
             pre_model_filter_accounts = accounts
@@ -2201,12 +2198,12 @@ def _filter_accounts_for_model(accounts: list[Account], model: str) -> list[Acco
     return [a for a in accounts if account_plan_matches_allowed(a.plan_type, allowed_plans)]
 
 
-def _provider_for_model(model: str | None, aliases: ModelAliasMapping | None = None) -> str | None:
+def _provider_for_model(model: str | None) -> str | None:
     if not isinstance(model, str):
         return None
     if not model.strip():
         return None
-    if is_zai_model(model, aliases):
+    if is_zai_model(model):
         return AccountProvider.ZAI.value
     return AccountProvider.OPENAI.value
 

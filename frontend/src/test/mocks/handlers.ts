@@ -1392,15 +1392,29 @@ export const handlers = [
     return HttpResponse.json({ status: "ok" });
   }),
 
-  http.get("/api/models", () => {
-    return HttpResponse.json({
-      models: [
-        { id: "gpt-5.1", name: "GPT 5.1" },
-        { id: "gpt-5.1-codex-mini", name: "GPT 5.1 Codex Mini" },
-        { id: "gpt-4o-mini", name: "GPT 4o Mini" },
-      ],
-    });
-  }),
+	http.get("/api/models", () => {
+		return HttpResponse.json({
+			models: [
+				{ id: "gpt-5.1", name: "GPT 5.1" },
+				{ id: "gpt-5.2", name: "GPT 5.2" },
+				{ id: "gpt-5.1-codex-mini", name: "GPT 5.1 Codex Mini" },
+				{ id: "gpt-4o-mini", name: "GPT 4o Mini" },
+			],
+		});
+	}),
+
+	http.get("/codex/setup", () => {
+		return HttpResponse.json({
+			provider: "codex-lb",
+			base_url: "https://codex.okidoo.co/backend-api/codex",
+			catalog_path: "$CODEX_HOME/codex-lb-catalog.json",
+			models_cache_path: "$CODEX_HOME/models_cache.json",
+			model_count: 6,
+            install_command: "curl -fsSL 'https://codex.okidoo.co/codex/setup/install.sh' | sh",
+            uninstall_command: "curl -fsSL 'https://codex.okidoo.co/codex/setup/uninstall.sh' | sh",
+			env_key: "CODEX_LB_API_KEY",
+		});
+	}),
 
   http.get("/api/api-keys/", () => {
     return HttpResponse.json(state.apiKeys);
