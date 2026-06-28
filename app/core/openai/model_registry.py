@@ -8,6 +8,7 @@ from fnmatch import fnmatchcase
 import anyio
 
 from app.core.types import JsonValue
+from app.core.zai.models import ZAI_MODEL_ALIASES
 
 logger = logging.getLogger(__name__)
 
@@ -190,7 +191,27 @@ _ZAI_MODELS: tuple[UpstreamModel, ...] = (
         raw={"provider": "zai", "max_output_tokens": 131_072},
     ),
 )
-_LOCAL_PROVIDER_MODELS: dict[str, UpstreamModel] = {model.slug: model for model in _ZAI_MODELS}
+_ZAI_GLM_52_COMPATIBILITY_SLUG = next(
+    alias for alias, target in ZAI_MODEL_ALIASES.items() if target == "glm-5.2"
+)
+
+_ZAI_COMPATIBILITY_MODELS: tuple[UpstreamModel, ...] = (
+    _bootstrap_model(
+        _ZAI_GLM_52_COMPATIBILITY_SLUG,
+        "GLM-5.2",
+        prefer_websockets=False,
+        minimal_client_version="0.0.1",
+        input_modalities=("text",),
+        context_window=1_048_576,
+        default_verbosity=None,
+        available_in_plans=_ZAI_AVAILABLE_IN_PLANS,
+        raw={"provider": "zai", "max_output_tokens": 131_072},
+    ),
+)
+
+_LOCAL_PROVIDER_MODELS: dict[str, UpstreamModel] = {
+    model.slug: model for model in (*_ZAI_MODELS, *_ZAI_COMPATIBILITY_MODELS)
+}
 
 
 def _merge_local_provider_models(models: dict[str, UpstreamModel]) -> dict[str, UpstreamModel]:
@@ -240,12 +261,6 @@ _BOOTSTRAP_STATIC_MODELS: tuple[UpstreamModel, ...] = (
         input_modalities=("text",),
         default_reasoning_level="high",
         minimal_client_version="0.100.0",
-    ),
-    _bootstrap_model(
-        "gpt-5.2",
-        "GPT-5.2",
-        prefer_websockets=True,
-        minimal_client_version="0.0.1",
     ),
     _bootstrap_model(
         "codex-auto-review",

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import cast
 
 from app.core.config.settings import get_settings
 from app.core.openai.model_registry import UpstreamModel, get_model_registry, is_public_model
@@ -19,6 +20,11 @@ _CATALOG_FAST_TIER_KEYS = {
     "service_tier",
     "service_tiers",
     "default_service_tier",
+}
+
+_CODEX_CATALOG_EXCLUDED_MODEL_SLUGS = {
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
 }
 
 _CATALOG_SKIP_KEYS = {
@@ -54,13 +60,13 @@ class CodexSetupConfig:
 
 def build_codex_catalog_payload(*, base_url: str | None = None) -> dict[str, JsonValue]:
     registry = get_model_registry()
-    models = [
+    models: list[dict[str, JsonValue]] = [
         _to_catalog_entry(model)
         for model in registry.get_models_with_fallback().values()
-        if is_public_model(model, None)
+        if is_public_model(model, None) and model.slug not in _CODEX_CATALOG_EXCLUDED_MODEL_SLUGS
     ]
     models.sort(key=lambda item: (str(item.get("display_name", "")), str(item.get("slug", ""))))
-    return {"models": models}
+    return {"models": cast(JsonValue, models)}
 
 
 def build_codex_catalog_json(*, base_url: str | None = None) -> str:
@@ -233,7 +239,7 @@ def _origin_from_backend_base_url(base_url: str) -> str:
 
 
 def _to_catalog_entry(model: UpstreamModel) -> dict[str, JsonValue]:
-    entry: dict[str, JsonValue] = {
+    entry = cast(dict[str, JsonValue], {
         "slug": model.slug,
         "display_name": model.display_name,
         "description": model.description,
@@ -263,7 +269,7 @@ def _to_catalog_entry(model: UpstreamModel) -> dict[str, JsonValue]:
         "experimental_supported_tools": [],
         "apply_patch_tool_type": "freeform",
         "truncation_policy": {"mode": "tokens", "limit": 10000},
-    }
+    })
     for key, value in model.raw.items():
         if key in _CATALOG_SKIP_KEYS:
             continue

@@ -8,6 +8,11 @@ from app.core.types import JsonValue
 pytestmark = pytest.mark.integration
 
 BOOTSTRAP_MODEL_SLUGS = {
+    "glm-4.7",
+    "glm-5",
+    "glm-5-turbo",
+    "glm-5.1",
+    "glm-5.2",
     "gpt-5.5",
     "gpt-5.4",
     "gpt-5.4-mini",
@@ -15,6 +20,15 @@ BOOTSTRAP_MODEL_SLUGS = {
     "gpt-5.3-codex-spark",
     "gpt-5.2",
     "codex-auto-review",
+}
+
+LOCAL_PROVIDER_MODEL_SLUGS = {
+    "glm-4.7",
+    "glm-5",
+    "glm-5-turbo",
+    "glm-5.1",
+    "glm-5.2",
+    "gpt-5.2",
 }
 
 EXPECTED_CORE_MODEL_PLANS = {
@@ -35,6 +49,11 @@ EXPECTED_CORE_MODEL_PLANS = {
 }
 
 EXPECTED_BOOTSTRAP_MINIMAL_CLIENT_VERSIONS = {
+    "glm-4.7": None,
+    "glm-5": None,
+    "glm-5-turbo": None,
+    "glm-5.1": None,
+    "glm-5.2": None,
     "gpt-5.5": "0.124.0",
     "gpt-5.4": "0.98.0",
     "gpt-5.4-mini": "0.98.0",
@@ -113,10 +132,11 @@ async def test_v1_models_list(async_client):
         assert item["context_length"] == item["metadata"]["input_context_window"]
         assert item["supportsReasoning"] is True
         assert item["supports_reasoning"] is True
-        assert item["supportsImages"] is True
-        assert item["supports_images"] is True
-        assert item["supportsVision"] is True
-        assert item["supports_vision"] is True
+        supports_images = "image" in item["metadata"]["input_modalities"]
+        assert item["supportsImages"] is supports_images
+        assert item["supports_images"] is supports_images
+        assert item["supportsVision"] is supports_images
+        assert item["supports_vision"] is supports_images
 
 
 @pytest.mark.asyncio
@@ -168,6 +188,12 @@ async def test_backend_codex_models_uses_bootstrap_upstream_metadata(async_clien
     assert auto_review["minimal_client_version"] == "0.98.0"
     assert set(auto_review["available_in_plans"]) == EXPECTED_CORE_MODEL_PLANS
     assert set(entries["gpt-5.3-codex"]["available_in_plans"]) == EXPECTED_CORE_MODEL_PLANS
+
+    compatibility = entries["gpt-5.2"]
+    assert compatibility["display_name"] == "GLM-5.2"
+    assert compatibility["prefer_websockets"] is False
+    assert compatibility["input_modalities"] == ["text"]
+    assert set(compatibility["available_in_plans"]) == {"zai"}
 
 
 @pytest.mark.asyncio
@@ -279,8 +305,12 @@ async def test_backend_codex_models_data_keeps_only_list_visible_models(async_cl
     resp = await async_client.get("/backend-api/codex/models")
     assert resp.status_code == 200
     payload = resp.json()
-    assert {m["slug"] for m in payload["models"]} == {"gpt-visible", "gpt-hidden"}
-    assert {m["id"] for m in payload["data"]} == {"gpt-visible"}
+    assert {m["slug"] for m in payload["models"]} == {
+        "gpt-visible",
+        "gpt-hidden",
+        *LOCAL_PROVIDER_MODEL_SLUGS,
+    }
+    assert {m["id"] for m in payload["data"]} == {"gpt-visible", *LOCAL_PROVIDER_MODEL_SLUGS}
     assert payload["data"][0]["object"] == "model"
     assert payload["data"][0]["owned_by"] == "codex-lb"
 
@@ -343,7 +373,7 @@ async def test_backend_codex_models_preserves_upstream_visibility(async_client):
 async def test_backend_codex_models_filters_disallowed_models(async_client):
     registry = get_model_registry()
     models = [
-        _make_upstream_model("gpt-5.2", base_instructions="allowed"),
+        _make_upstream_model("gpt-allowed", base_instructions="allowed"),
         _make_upstream_model("gpt-5.3-codex", base_instructions="blocked"),
     ]
     await registry.update({"plus": models, "pro": models})
@@ -363,7 +393,7 @@ async def test_backend_codex_models_filters_disallowed_models(async_client):
         "/api/api-keys/",
         json={
             "name": "codex-restricted",
-            "allowedModels": ["gpt-5.2"],
+                "allowedModels": ["gpt-allowed"],
         },
     )
     assert created.status_code == 200
@@ -372,7 +402,7 @@ async def test_backend_codex_models_filters_disallowed_models(async_client):
     resp = await async_client.get("/backend-api/codex/models", headers={"Authorization": f"Bearer {key}"})
     assert resp.status_code == 200
     entries = resp.json()["models"]
-    assert [entry["slug"] for entry in entries] == ["gpt-5.2"]
+    assert [entry["slug"] for entry in entries] == ["gpt-allowed"]
     assert entries[0]["base_instructions"] == "allowed"
 
 
@@ -431,9 +461,10 @@ async def test_backend_codex_models_rewrites_visibility_when_opted_in(async_clie
     assert resp.status_code == 200
 
     entries = {entry["slug"]: entry for entry in resp.json()["models"]}
-    assert set(entries) == {"gpt-5.2", "gpt-5.3-codex"}
+    assert set(entries) == {"gpt-5.3-codex", *LOCAL_PROVIDER_MODEL_SLUGS}
     assert entries["gpt-5.2"]["visibility"] == "list"
     assert entries["gpt-5.3-codex"]["visibility"] == "hide"
+    assert entries["glm-5.2"]["visibility"] == "hide"
 
 
 @pytest.mark.asyncio
@@ -484,7 +515,7 @@ async def test_backend_codex_models_visibility_allowlist_respects_enforced_model
     assert resp.status_code == 200
 
     entries = {entry["slug"]: entry for entry in resp.json()["models"]}
-    assert set(entries) == {"gpt-5.2", "gpt-5.3-codex"}
+    assert set(entries) == {"gpt-5.3-codex", *LOCAL_PROVIDER_MODEL_SLUGS}
     assert entries["gpt-5.2"]["visibility"] == "hide"
     assert entries["gpt-5.3-codex"]["visibility"] == "list"
 
@@ -540,7 +571,7 @@ async def test_model_catalogs_canonicalize_enforced_model_alias(async_client):
     codex_resp = await async_client.get("/backend-api/codex/models", headers={"Authorization": f"Bearer {key}"})
     assert codex_resp.status_code == 200
     entries = {entry["slug"]: entry for entry in codex_resp.json()["models"]}
-    assert set(entries) == {"gpt-5.2", "gpt-5.4-mini"}
+    assert set(entries) == {"gpt-5.4-mini", *LOCAL_PROVIDER_MODEL_SLUGS}
     assert entries["gpt-5.2"]["visibility"] == "hide"
     assert entries["gpt-5.4-mini"]["visibility"] == "list"
 
@@ -591,8 +622,8 @@ async def test_backend_codex_models_preserves_original_flow_without_allowlist(as
     assert resp.status_code == 200
 
     entries = {entry["slug"]: entry for entry in resp.json()["models"]}
-    assert set(entries) == {"gpt-5.2", "gpt-5.3-codex"}
-    assert entries["gpt-5.2"]["visibility"] == "hide"
+    assert set(entries) == {"gpt-5.3-codex", *LOCAL_PROVIDER_MODEL_SLUGS}
+    assert entries["gpt-5.2"]["visibility"] == "list"
     assert entries["gpt-5.3-codex"]["visibility"] == "list"
 
 

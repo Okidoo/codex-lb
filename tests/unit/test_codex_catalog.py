@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+from typing import Any, cast
 
 import pytest
 
@@ -13,12 +14,17 @@ from app.core.codex_catalog import (
 )
 
 
-def _catalog_model(slug: str) -> dict:
+def _catalog_models() -> list[dict[str, Any]]:
     payload = build_codex_catalog_payload(base_url="https://codex.okidoo.co/backend-api/codex")
     models = payload["models"]
     assert isinstance(models, list)
-    for model in models:
-        if isinstance(model, dict) and model.get("slug") == slug:
+    assert all(isinstance(model, dict) for model in models)
+    return cast(list[dict[str, Any]], models)
+
+
+def _catalog_model(slug: str) -> dict[str, Any]:
+    for model in _catalog_models():
+        if model.get("slug") == slug:
             return model
     raise AssertionError(f"missing model {slug}")
 
@@ -41,6 +47,21 @@ def test_codex_catalog_includes_glm_52_with_strict_fields() -> None:
     assert "default_service_tier" not in glm
 
 
+def test_codex_catalog_maps_allowlisted_gpt_52_slug_to_glm_52() -> None:
+    compatibility = _catalog_model("gpt-5.2")
+    assert compatibility["display_name"] == "GLM-5.2"
+    assert compatibility["input_modalities"] == ["text"]
+    assert compatibility["available_in_plans"] == ["zai"]
+    assert compatibility["prefer_websockets"] is False
+    assert compatibility["provider"] == "zai"
+
+
+def test_codex_catalog_hides_old_codex_slugs_from_installer() -> None:
+    slugs = {model["slug"] for model in _catalog_models()}
+    assert "gpt-5.3-codex" not in slugs
+    assert "gpt-5.3-codex-spark" not in slugs
+
+
 def test_codex_setup_summary_and_scripts_emit_no_secret() -> None:
     summary = build_codex_setup_summary(base_url="https://codex.okidoo.co/backend-api/codex")
     install_script = build_install_script(public_origin="https://codex.okidoo.co")
@@ -48,7 +69,9 @@ def test_codex_setup_summary_and_scripts_emit_no_secret() -> None:
 
     assert summary["provider"] == "codex-lb"
     assert "env_key" not in summary
-    assert summary["model_count"] > 0
+    model_count = summary["model_count"]
+    assert isinstance(model_count, int)
+    assert model_count > 0
     assert summary["install_command"] == "curl -fsSL 'https://codex.okidoo.co/codex/setup/install.sh' | sh"
     assert summary["uninstall_command"] == "curl -fsSL 'https://codex.okidoo.co/codex/setup/uninstall.sh' | sh"
     assert "model_catalog_json" in install_script

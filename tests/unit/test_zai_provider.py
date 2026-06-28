@@ -58,6 +58,18 @@ def test_zai_request_rewrites_current_codex_gpt_identity() -> None:
     assert "Stay concise." in content
 
 
+def test_zai_request_maps_codex_compatibility_slug_to_glm_52() -> None:
+    chat_payload = responses_to_zai_chat(
+        {
+            "model": "gpt-5.2",
+            "input": "hello",
+        }
+    )
+
+    chat = cast(dict[str, Any], chat_payload)
+    assert chat["model"] == "glm-5.2"
+
+
 def test_zai_quota_payload_maps_token_windows() -> None:
     payload = usage_payload_from_zai_quota(
         {
@@ -256,6 +268,7 @@ async def test_glm_models_survive_registry_refresh() -> None:
 
     assert "glm-5.1" in registry.get_models_with_fallback()
     assert registry.plan_types_for_model("glm-5.1") == frozenset({"zai"})
+    assert registry.plan_types_for_model("gpt-5.2") == frozenset({"zai"})
 
 
 def test_provider_filtering_routes_glm_to_zai_accounts() -> None:
@@ -275,7 +288,7 @@ def test_provider_filtering_routes_glm_to_zai_accounts() -> None:
     )
 
     assert _provider_for_model("glm-5.1") == AccountProvider.ZAI.value
-    assert _provider_for_model("gpt-5.2") == AccountProvider.OPENAI.value
+    assert _provider_for_model("gpt-5.2") == AccountProvider.ZAI.value
     assert _provider_for_model("gpt-5.1") == AccountProvider.OPENAI.value
     assert _filter_accounts_for_provider([openai_account, zai_account], AccountProvider.ZAI.value) == [
         zai_account

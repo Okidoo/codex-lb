@@ -26,7 +26,21 @@ EXPECTED_CORE_MODEL_PLANS = {
     "enterprise_cbp_usage_based",
 }
 
+EXPECTED_LOCAL_PROVIDER_MODEL_SLUGS = {
+    "glm-4.7",
+    "glm-5",
+    "glm-5-turbo",
+    "glm-5.1",
+    "glm-5.2",
+    "gpt-5.2",
+}
+
 EXPECTED_BOOTSTRAP_MINIMAL_CLIENT_VERSIONS = {
+    "glm-4.7": None,
+    "glm-5": None,
+    "glm-5-turbo": None,
+    "glm-5.1": None,
+    "glm-5.2": None,
     "gpt-5.5": "0.124.0",
     "gpt-5.4": "0.98.0",
     "gpt-5.4-mini": "0.98.0",
@@ -132,7 +146,7 @@ def test_prefers_websockets_uses_bootstrap_fallback_when_uninitialized():
     assert registry.prefers_websockets("gpt-5.3-codex") is True
     assert registry.prefers_websockets("gpt-5.3-codex-spark") is True
     assert registry.prefers_websockets("gpt-5.4-mini") is True
-    assert registry.prefers_websockets("gpt-5.2") is True
+    assert registry.prefers_websockets("gpt-5.2") is False
     assert registry.prefers_websockets("gpt-5.1") is False
 
 
@@ -168,6 +182,13 @@ def test_bootstrap_models_include_representative_upstream_metadata():
     assert auto_review.raw["max_context_window"] == 1_000_000
     assert auto_review.minimal_client_version == "0.98.0"
     assert auto_review.available_in_plans == EXPECTED_CORE_MODEL_PLANS
+
+    compatibility = models["gpt-5.2"]
+    assert compatibility.display_name == "GLM-5.2"
+    assert compatibility.prefer_websockets is False
+    assert compatibility.available_in_plans == frozenset({"zai"})
+    assert compatibility.input_modalities == ("text",)
+    assert compatibility.raw["provider"] == "zai"
     assert models["gpt-5.3-codex"].available_in_plans == EXPECTED_CORE_MODEL_PLANS
 
 
@@ -183,7 +204,12 @@ async def test_update_merges_models_across_plans():
 
     snapshot = registry.get_snapshot()
     assert snapshot is not None
-    assert set(snapshot.models.keys()) == {"shared", "plus-only", "pro-only"}
+    assert set(snapshot.models.keys()) == {
+        "shared",
+        "plus-only",
+        "pro-only",
+        *EXPECTED_LOCAL_PROVIDER_MODEL_SLUGS,
+    }
     assert snapshot.plan_models["plus"] == frozenset({"shared", "plus-only"})
     assert snapshot.plan_models["pro"] == frozenset({"shared", "pro-only"})
 
