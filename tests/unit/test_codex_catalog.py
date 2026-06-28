@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+import subprocess
+
 import pytest
 
 from app.core.codex_catalog import (
@@ -54,6 +57,70 @@ def test_codex_setup_summary_and_scripts_emit_no_secret() -> None:
     assert "supports_websockets = true" in install_script
     assert "sk-clb-..." in install_script
     assert "sk-clb-" not in uninstall_script
+
+
+def test_codex_install_script_replaces_legacy_provider_block(tmp_path) -> None:
+    codex_home = tmp_path / "codex"
+    codex_home.mkdir()
+    config_path = codex_home / "config.toml"
+    config_path.write_text(
+        "\n".join(
+            [
+                'model = "gpt-5.5"',
+                'model_provider = "codex-lb"',
+                'model_catalog_json = "/tmp/old-catalog.json"',
+                "",
+                "[model_providers.codex-lb]",
+                'name = "OpenAI"',
+                'base_url = "http://old.example/backend-api/codex"',
+                'wire_api = "responses"',
+                "",
+                "[model_providers.codex-lb2]",
+                'name = "Local"',
+                'base_url = "http://localhost:2455/backend-api/codex"',
+                "",
+            ]
+        )
+    )
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_curl = fake_bin / "curl"
+    fake_curl.write_text(
+        """#!/bin/sh
+set -eu
+out=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o)
+      shift
+      out="$1"
+      ;;
+  esac
+  shift || break
+done
+[ -n "$out" ]
+printf '%s\n' '{"models":[]}' > "$out"
+"""
+    )
+    fake_curl.chmod(0o755)
+    env = os.environ.copy()
+    env["CODEX_HOME"] = str(codex_home)
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+
+    subprocess.run(
+        ["sh"],
+        input=build_install_script(public_origin="https://codex.okidoo.co"),
+        text=True,
+        capture_output=True,
+        env=env,
+        check=True,
+    )
+
+    updated = config_path.read_text()
+    assert updated.count("[model_providers.codex-lb]") == 1
+    assert "[model_providers.codex-lb2]" in updated
+    assert "http://old.example/backend-api/codex" not in updated
+    assert 'base_url = "https://codex.okidoo.co/backend-api/codex"' in updated
 
 
 @pytest.mark.asyncio

@@ -120,14 +120,20 @@ def strip_managed(lines):
     first_table = next((i for i, line in enumerate(lines) if line.lstrip().startswith("[")), len(lines))
     out = []
     in_managed = False
+    in_codex_lb_provider = False
     for index, line in enumerate(lines):
         stripped = line.strip()
         if stripped == "# Auto-injected by codex-lb":
             in_managed = True
             continue
+        if stripped == "[model_providers.codex-lb]":
+            in_codex_lb_provider = True
+            continue
+        if in_codex_lb_provider and stripped.startswith("["):
+            in_codex_lb_provider = False
         if in_managed and stripped.startswith("[") and stripped != "[model_providers.codex-lb]":
             in_managed = False
-        if in_managed:
+        if in_managed or in_codex_lb_provider:
             continue
         if index < first_table and (
             stripped.startswith("model_provider =") or stripped.startswith("model_catalog_json =")
@@ -194,14 +200,20 @@ out_path = Path(sys.argv[2])
 lines = config_path.read_text().splitlines()
 out = []
 in_managed = False
+in_codex_lb_provider = False
 for line in lines:
     stripped = line.strip()
     if stripped == "# Auto-injected by codex-lb":
         in_managed = True
         continue
+    if stripped == "[model_providers.codex-lb]":
+        in_codex_lb_provider = True
+        continue
+    if in_codex_lb_provider and stripped.startswith("["):
+        in_codex_lb_provider = False
     if in_managed and stripped.startswith("[") and stripped != "[model_providers.codex-lb]":
         in_managed = False
-    if in_managed:
+    if in_managed or in_codex_lb_provider:
         continue
     if stripped == 'model_provider = "codex-lb"':
         continue
