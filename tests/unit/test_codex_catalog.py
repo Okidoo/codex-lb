@@ -82,6 +82,22 @@ async def test_codex_setup_routes_are_public(async_client) -> None:
 
 
 @pytest.mark.asyncio
+async def test_codex_setup_defaults_public_hosts_to_https(async_client) -> None:
+    response = await async_client.get("/codex/setup", headers={"host": "codex.okidoo.co"})
+
+    assert response.status_code == 200
+    assert response.json()["base_url"] == "https://codex.okidoo.co/backend-api/codex"
+
+
+@pytest.mark.asyncio
+async def test_codex_setup_keeps_local_hosts_on_request_scheme(async_client) -> None:
+    response = await async_client.get("/codex/setup", headers={"host": "127.0.0.1:2455"})
+
+    assert response.status_code == 200
+    assert response.json()["base_url"] == "http://127.0.0.1:2455/backend-api/codex"
+
+
+@pytest.mark.asyncio
 async def test_codex_setup_rejects_unsafe_forwarded_host(async_client) -> None:
     response = await async_client.get(
         "/codex/setup",
