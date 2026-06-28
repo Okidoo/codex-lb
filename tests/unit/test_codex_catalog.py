@@ -29,6 +29,7 @@ def test_codex_catalog_includes_glm_52_with_strict_fields() -> None:
     assert glm["display_name"] == "GLM-5.2"
     assert glm["input_modalities"] == ["text"]
     assert glm["available_in_plans"] == ["zai"]
+    assert glm["default_reasoning_level"] == "medium"
     assert glm["visibility"] == "list"
     assert glm["shell_type"] == "shell_command"
     assert glm["apply_patch_tool_type"] == "freeform"
