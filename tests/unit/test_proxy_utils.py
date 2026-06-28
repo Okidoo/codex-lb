@@ -12668,6 +12668,35 @@ async def test_next_websocket_receive_timeout_tracks_precreated_requests(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_next_websocket_receive_timeout_uses_latest_response_create_attempt(monkeypatch):
+    monkeypatch.setattr(proxy_service.time, "monotonic", lambda: 100.0)
+    service = proxy_service.ProxyService(_repo_factory(_RequestLogsRecorder()))
+    precreated_request = proxy_service._WebSocketRequestState(
+        request_id="req_precreated_retry",
+        model="gpt-5.1",
+        service_tier=None,
+        reasoning_effort=None,
+        api_key_reservation=None,
+        started_at=10.0,
+        response_create_started_at=95.0,
+        awaiting_response_created=True,
+    )
+
+    timeout = await service._next_websocket_receive_timeout(
+        deque([precreated_request]),
+        pending_lock=anyio.Lock(),
+        proxy_request_budget_seconds=7200.0,
+        stream_idle_timeout_seconds=7200.0,
+        response_create_timeout_seconds=60.0,
+    )
+
+    assert timeout is not None
+    assert timeout.timeout_seconds == 55.0
+    assert timeout.error_code == "response_create_timeout"
+    assert timeout.fail_all_pending is True
+
+
+@pytest.mark.asyncio
 async def test_fail_expired_pending_websocket_requests_keeps_newer_requests(monkeypatch):
     request_logs = _RequestLogsRecorder()
     service = proxy_service.ProxyService(_repo_factory(request_logs))

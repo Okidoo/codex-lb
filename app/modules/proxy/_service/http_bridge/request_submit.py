@@ -296,6 +296,7 @@ class _HTTPBridgeRequestSubmitMixin:
             if input_item_count > 0:
                 input_full_fingerprint = _fingerprint_input_items(payload_input_list)
 
+        request_started_at = _service_time().monotonic()
         request_state = _WebSocketRequestState(
             request_id=request_id or f"ws_{uuid4().hex}",
             request_log_id=request_log_id,
@@ -303,7 +304,8 @@ class _HTTPBridgeRequestSubmitMixin:
             service_tier=forwarded_service_tier,
             reasoning_effort=payload.reasoning.effort if payload.reasoning else None,
             api_key_reservation=api_key_reservation,
-            started_at=_service_time().monotonic(),
+            started_at=request_started_at,
+            response_create_started_at=request_started_at,
             requested_service_tier=forwarded_service_tier,
             awaiting_response_created=True,
             event_queue=asyncio.Queue() if attach_event_queue else None,
@@ -626,7 +628,8 @@ class _HTTPBridgeRequestSubmitMixin:
                     )
                 async with session.pending_lock:
                     session.pending_requests.append(request_state)
-                request_enqueued = True
+                    request_enqueued = True
+                request_state.response_create_started_at = _service_time().monotonic()
                 await session.upstream.send_text(text_data)
                 session.last_used_at = _service_time().monotonic()
         except ProxyResponseError:
@@ -721,13 +724,15 @@ class _HTTPBridgeRequestSubmitMixin:
             if warmup_text is None:
                 return
 
+            warmup_started_at = _service_time().monotonic()
             warmup_state = _WebSocketRequestState(
                 request_id=f"http_prewarm_{uuid4().hex}",
                 model=request_state.model,
                 service_tier=request_state.service_tier,
                 reasoning_effort=request_state.reasoning_effort,
                 api_key_reservation=None,
-                started_at=_service_time().monotonic(),
+                started_at=warmup_started_at,
+                response_create_started_at=warmup_started_at,
                 requested_service_tier=request_state.requested_service_tier,
                 actual_service_tier=request_state.actual_service_tier,
                 awaiting_response_created=True,
@@ -1111,6 +1116,7 @@ class _HTTPBridgeRequestSubmitMixin:
         try:
             await self._reconnect_http_bridge_session(session, request_state=request_state)
             request_text = self._http_bridge_text_with_account_installation_id(session, request_state, request_text)
+            request_state.response_create_started_at = _service_time().monotonic()
             await session.upstream.send_text(request_text)
             session.last_used_at = _service_time().monotonic()
             return True

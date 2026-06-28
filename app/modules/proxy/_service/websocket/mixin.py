@@ -3365,7 +3365,7 @@ class _WebSocketMixin:
                 if _http_bridge_request_counts_against_queue(request_state)
             ]
             response_create_started_ats = [
-                request_state.started_at
+                request_state.response_create_started_at or request_state.started_at
                 for request_state in pending_requests
                 if _http_bridge_request_counts_against_queue(request_state)
                 and request_state.response_id is None

@@ -357,6 +357,7 @@ def _prepare_websocket_request_state_for_visible_output_replay(
     request_state.replay_count += 1
     request_state.awaiting_response_created = True
     request_state.response_id = None
+    request_state.response_create_started_at = None
     request_state.response_event_count = 0
     request_state.replay_downstream_response_id = downstream_response_id
     request_state.suppress_next_created_downstream = downstream_response_id is not None
