@@ -6,7 +6,6 @@ import subprocess
 import pytest
 
 from app.core.codex_catalog import (
-    CODEX_LB_ENV_KEY,
     build_codex_catalog_payload,
     build_codex_setup_summary,
     build_install_script,
@@ -47,7 +46,7 @@ def test_codex_setup_summary_and_scripts_emit_no_secret() -> None:
     uninstall_script = build_uninstall_script()
 
     assert summary["provider"] == "codex-lb"
-    assert summary["env_key"] == CODEX_LB_ENV_KEY
+    assert "env_key" not in summary
     assert summary["model_count"] > 0
     assert summary["install_command"] == "curl -fsSL 'https://codex.okidoo.co/codex/setup/install.sh' | sh"
     assert summary["uninstall_command"] == "curl -fsSL 'https://codex.okidoo.co/codex/setup/uninstall.sh' | sh"
@@ -55,7 +54,9 @@ def test_codex_setup_summary_and_scripts_emit_no_secret() -> None:
     assert "models_cache.json" in install_script
     assert "requires_openai_auth = true" in install_script
     assert "supports_websockets = true" in install_script
-    assert "sk-clb-..." in install_script
+    assert "env_key" not in install_script
+    assert "CODEX_LB_API_KEY" not in install_script
+    assert "sk-clb-" not in install_script
     assert "sk-clb-" not in uninstall_script
 
 

@@ -12,7 +12,6 @@ CODEX_LB_CATALOG_FILENAME = "codex-lb-catalog.json"
 CODEX_LB_MODELS_CACHE_FILENAME = "models_cache.json"
 CODEX_LB_PROVIDER_NAME = "codex-lb"
 CODEX_LB_PROVIDER_DISPLAY_NAME = "Codex LB"
-CODEX_LB_ENV_KEY = "CODEX_LB_API_KEY"
 CODEX_LB_DEFAULT_BASE_URL = "https://codex.okidoo.co/backend-api/codex"
 
 _CATALOG_FAST_TIER_KEYS = {
@@ -49,7 +48,6 @@ class CodexSetupConfig:
     base_url: str = CODEX_LB_DEFAULT_BASE_URL
     provider_name: str = CODEX_LB_PROVIDER_NAME
     provider_display_name: str = CODEX_LB_PROVIDER_DISPLAY_NAME
-    env_key: str = CODEX_LB_ENV_KEY
     catalog_filename: str = CODEX_LB_CATALOG_FILENAME
     models_cache_filename: str = CODEX_LB_MODELS_CACHE_FILENAME
 
@@ -82,7 +80,6 @@ def build_codex_setup_summary(*, base_url: str | None = None) -> dict[str, JsonV
         "model_count": model_count,
         "install_command": f"curl -fsSL {shell_quote(f'{origin}/codex/setup/install.sh')} | sh",
         "uninstall_command": f"curl -fsSL {shell_quote(f'{origin}/codex/setup/uninstall.sh')} | sh",
-        "env_key": CODEX_LB_ENV_KEY,
     }
 
 
@@ -156,7 +153,6 @@ block = [
     f'name = "{cfg.provider_display_name}"',
     f'base_url = "{cfg.base_url}"',
     'wire_api = "responses"',
-    f'env_key = "{cfg.env_key}"',
     "supports_websockets = true",
     "requires_openai_auth = true",
 ]
@@ -171,8 +167,6 @@ cat <<EOF
 Codex LB config installed.
 Backup: $BACKUP_PATH
 Catalog: $CATALOG_PATH
-Set your API key before launching Codex:
-  export {cfg.env_key}="sk-clb-..."
 EOF
 """
 

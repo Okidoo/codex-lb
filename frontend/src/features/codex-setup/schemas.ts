@@ -9,7 +9,6 @@ export const CodexSetupSchema = z
 		model_count: z.number(),
 		install_command: z.string(),
 		uninstall_command: z.string(),
-		env_key: z.string(),
 	})
 	.transform((value) => ({
 		provider: value.provider,
@@ -19,7 +18,6 @@ export const CodexSetupSchema = z
 		modelCount: value.model_count,
 		installCommand: value.install_command,
 		uninstallCommand: value.uninstall_command,
-		envKey: value.env_key,
 	}));
 
 export type CodexSetup = z.infer<typeof CodexSetupSchema>;

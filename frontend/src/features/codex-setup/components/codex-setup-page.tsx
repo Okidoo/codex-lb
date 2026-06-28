@@ -82,7 +82,6 @@ export function CodexSetupPage() {
 							onCopy={() => copy(setup.uninstallCommand, "Uninstall command")}
 						/>
 						<ReadonlyField label="Catalog" value={setup.catalogPath} />
-						<ReadonlyField label="API key env" value={setup.envKey} />
 					</div>
 				) : null}
 			</section>

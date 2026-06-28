@@ -1410,9 +1410,8 @@ export const handlers = [
 			catalog_path: "$CODEX_HOME/codex-lb-catalog.json",
 			models_cache_path: "$CODEX_HOME/models_cache.json",
 			model_count: 6,
-            install_command: "curl -fsSL 'https://codex.okidoo.co/codex/setup/install.sh' | sh",
-            uninstall_command: "curl -fsSL 'https://codex.okidoo.co/codex/setup/uninstall.sh' | sh",
-			env_key: "CODEX_LB_API_KEY",
+			install_command: "curl -fsSL 'https://codex.okidoo.co/codex/setup/install.sh' | sh",
+			uninstall_command: "curl -fsSL 'https://codex.okidoo.co/codex/setup/uninstall.sh' | sh",
 		});
 	}),
 

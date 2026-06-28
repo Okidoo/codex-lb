@@ -180,22 +180,7 @@ plain `ws://` handshakes also check `ws_proxy` and `http_proxy`. Set
 `CODEX_LB_UPSTREAM_WEBSOCKET_TRUST_ENV=false` only when websocket handshakes must bypass those
 environment proxies and connect directly.
 
-**With [API key auth](#api-key-authentication):**
-
-```toml
-[model_providers.codex-lb]
-name = "openai"
-base_url = "http://127.0.0.1:2455/backend-api/codex"
-wire_api = "responses"
-env_key = "CODEX_LB_API_KEY"
-supports_websockets = true
-requires_openai_auth = true # required for codex app
-```
-
-```bash
-export CODEX_LB_API_KEY="sk-clb-..."   # key from dashboard
-codex
-```
+For Codex, do not set `env_key`. Keep `requires_openai_auth = true` and let Codex use its normal auth flow. Dashboard API keys are for OpenAI-compatible `/v1` clients such as OpenCode, OpenClaw, SDKs, or remote non-Codex callers.
 
 **Verify WebSocket transport**
 
