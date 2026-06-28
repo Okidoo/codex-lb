@@ -11177,6 +11177,111 @@ async def test_connect_proxy_websocket_fails_over_after_forced_refresh_transport
 
 
 @pytest.mark.asyncio
+async def test_connect_proxy_websocket_safe_full_resend_falls_back_from_stale_previous_owner(monkeypatch):
+    service = proxy_service.ProxyService(_repo_factory(_RequestLogsRecorder()))
+    owner_account = _make_account("acc_ws_prev_owner_stale")
+    fallback_account = _make_account("acc_ws_prev_owner_fallback")
+    stale_text = json.dumps(
+        {
+            "type": "response.create",
+            "model": "gpt-5.1",
+            "previous_response_id": "resp_stale_owner",
+            "input": [{"role": "user", "content": "tail"}],
+        }
+    )
+    fresh_text = json.dumps(
+        {
+            "type": "response.create",
+            "model": "gpt-5.1",
+            "input": [
+                {"role": "user", "content": "full"},
+                {"role": "user", "content": "resend"},
+            ],
+        }
+    )
+    request_state = proxy_service._WebSocketRequestState(
+        request_id="ws_req_stale_owner_full_resend",
+        model="gpt-5.1",
+        service_tier=None,
+        reasoning_effort=None,
+        api_key_reservation=None,
+        started_at=0.0,
+        request_text=stale_text,
+        previous_response_id="resp_stale_owner",
+        session_id="session-stale-owner",
+        preferred_account_id=owner_account.id,
+        fresh_upstream_request_text=fresh_text,
+        fresh_upstream_request_is_retry_safe=True,
+    )
+    selected_lease = await service._load_balancer.acquire_account_lease(fallback_account.id, kind="stream")
+    selection_calls: list[dict[str, object]] = []
+    captured_connect: dict[str, object] = {}
+
+    async def fake_select_websocket_connect_account(*args: object, **kwargs: object) -> Account:
+        del args
+        selection_calls.append(
+            {
+                "preferred_account_id": kwargs["preferred_account_id"],
+                "require_preferred_account": kwargs["require_preferred_account"],
+            }
+        )
+        request_state.websocket_stream_lease = selected_lease
+        return fallback_account
+
+    async def fake_connect_attempt(
+        account: Account,
+        headers: dict[str, str],
+        *,
+        deadline: float,
+        api_key: object,
+        request_state: proxy_service._WebSocketRequestState,
+        client_send_lock: anyio.Lock,
+        websocket: WebSocket,
+        force_refresh: bool,
+    ) -> tuple[Account, object]:
+        del headers, deadline, api_key, client_send_lock, websocket, force_refresh
+        captured_connect["account_id"] = account.id
+        captured_connect["request_text"] = request_state.request_text
+        captured_connect["previous_response_id"] = request_state.previous_response_id
+        captured_connect["preferred_account_id"] = request_state.preferred_account_id
+        captured_connect["fresh_retry_safe"] = request_state.fresh_upstream_request_is_retry_safe
+        return account, object()
+
+    monkeypatch.setattr(service, "_select_websocket_connect_account", fake_select_websocket_connect_account)
+    monkeypatch.setattr(service, "_try_open_websocket_connect_attempt", fake_connect_attempt)
+    monkeypatch.setattr(proxy_service, "get_settings", lambda: _make_proxy_settings(log_proxy_service_tier_trace=False))
+
+    selected_account, upstream = await service._connect_proxy_websocket(
+        {},
+        sticky_key=None,
+        sticky_kind=None,
+        prefer_earlier_reset=False,
+        routing_strategy="usage_weighted",
+        model="gpt-5.1",
+        request_state=request_state,
+        api_key=None,
+        client_send_lock=anyio.Lock(),
+        websocket=cast(WebSocket, SimpleNamespace()),
+    )
+
+    assert selected_account == fallback_account
+    assert upstream is not None
+    assert selection_calls == [
+        {
+            "preferred_account_id": owner_account.id,
+            "require_preferred_account": False,
+        }
+    ]
+    assert captured_connect == {
+        "account_id": fallback_account.id,
+        "request_text": fresh_text,
+        "previous_response_id": None,
+        "preferred_account_id": None,
+        "fresh_retry_safe": False,
+    }
+
+
+@pytest.mark.asyncio
 async def test_connect_proxy_websocket_cancellation_before_handoff_releases_stream_lease(monkeypatch):
     service = proxy_service.ProxyService(_repo_factory(_RequestLogsRecorder()))
     account = _make_account("acc_ws_cancel_handoff")

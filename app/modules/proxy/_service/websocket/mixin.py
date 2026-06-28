@@ -1512,8 +1512,18 @@ class _WebSocketMixin:
             is_retry = attempt > 0
             forced_refresh_account_id = request_state.force_refresh_account_id
             preferred_account_id = forced_refresh_account_id or request_state.preferred_account_id
+            allow_previous_response_owner_fallback = (
+                forced_refresh_account_id is None
+                and request_state.previous_response_id is not None
+                and request_state.preferred_account_id is not None
+                and not request_state.file_required_preferred_account
+                and request_state.fresh_upstream_request_is_retry_safe
+                and request_state.fresh_upstream_request_text is not None
+            )
             require_preferred_account = (
-                request_state.previous_response_id is not None and request_state.preferred_account_id is not None
+                request_state.previous_response_id is not None
+                and request_state.preferred_account_id is not None
+                and not allow_previous_response_owner_fallback
             ) or request_state.file_required_preferred_account
             try:
                 account = await proxy._select_websocket_connect_account(
@@ -1559,6 +1569,34 @@ class _WebSocketMixin:
                 if last_failover_exc is not None and not require_preferred_account:
                     break
                 return None, None
+            if (
+                allow_previous_response_owner_fallback
+                and preferred_account_id is not None
+                and account.id != preferred_account_id
+                and request_state.fresh_upstream_request_text is not None
+            ):
+                detached_previous_response_id = request_state.previous_response_id
+                request_state.request_text = request_state.fresh_upstream_request_text
+                request_state.previous_response_id = None
+                request_state.preferred_account_id = None
+                request_state.proxy_injected_previous_response_id = False
+                request_state.fresh_upstream_request_text = None
+                request_state.fresh_upstream_request_is_retry_safe = False
+                _record_continuity_owner_resolution(
+                    surface="websocket_connect",
+                    source="fresh_full_resend",
+                    outcome="detached",
+                    previous_response_id=detached_previous_response_id,
+                    session_id=request_state.session_id,
+                )
+                _facade().logger.info(
+                    "Websocket previous_response owner unavailable; retrying safe full resend without anchor "
+                    "request_id=%s old_account_id=%s new_account_id=%s model=%s",
+                    request_state.request_log_id or request_state.request_id,
+                    preferred_account_id,
+                    account.id,
+                    model,
+                )
             if forced_refresh_account_id is not None and account.id != forced_refresh_account_id:
                 request_state.force_refresh_account_id = None
                 if request_state.preferred_account_id == forced_refresh_account_id:
