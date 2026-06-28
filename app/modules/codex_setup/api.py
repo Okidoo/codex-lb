@@ -51,11 +51,13 @@ def _public_origin(request: Request) -> str:
     forwarded_proto = _first_header_value(request.headers.get("x-forwarded-proto"))
     forwarded_host = _first_header_value(request.headers.get("x-forwarded-host") or request.headers.get("host"))
     if forwarded_host:
-        scheme = (forwarded_proto or _fallback_scheme(forwarded_host, request.url.scheme)).lower()
+        scheme = (forwarded_proto or request.url.scheme).lower()
         if scheme not in _ALLOWED_PUBLIC_ORIGIN_SCHEMES:
             raise HTTPException(status_code=400, detail="Invalid public origin scheme")
         if not _is_safe_public_host(forwarded_host):
             raise HTTPException(status_code=400, detail="Invalid public origin host")
+        if not _is_local_http_host(forwarded_host):
+            scheme = "https"
         return f"{scheme}://{forwarded_host}".rstrip("/")
     return str(request.base_url).rstrip("/")
 
@@ -73,12 +75,6 @@ def _is_safe_public_host(host: str) -> bool:
     except ValueError:
         return False
     return bool(parsed.hostname) and not parsed.username and not parsed.password
-
-
-def _fallback_scheme(host: str, request_scheme: str) -> str:
-    if _is_local_http_host(host):
-        return request_scheme
-    return "https"
 
 
 def _is_local_http_host(host: str) -> bool:
