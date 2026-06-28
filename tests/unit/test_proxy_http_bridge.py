@@ -11621,7 +11621,10 @@ async def test_http_bridge_response_create_gate_timeout_logs_pending_bridge_cont
     monkeypatch.setattr(
         proxy_service,
         "get_settings",
-        lambda: _make_app_settings(proxy_admission_wait_timeout_seconds=0.001),
+        lambda: _make_app_settings(
+            proxy_admission_wait_timeout_seconds=0.001,
+            http_responses_session_bridge_response_create_timeout_seconds=0.001,
+        ),
     )
 
     with caplog.at_level(logging.WARNING):

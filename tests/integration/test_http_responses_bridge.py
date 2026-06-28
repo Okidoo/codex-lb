@@ -166,6 +166,7 @@ def _make_app_settings(
     max_sessions: int = 128,
     queue_limit: int = 8,
     admission_wait_timeout_seconds: float = 0.05,
+    response_create_timeout_seconds: float | None = None,
     codex_idle_ttl_seconds: float = 900.0,
     codex_prewarm_enabled: bool = False,
     instance_id: str = "instance-a",
@@ -181,6 +182,11 @@ def _make_app_settings(
         http_responses_session_bridge_instance_id=instance_id,
         http_responses_session_bridge_instance_ring=list(instance_ring or []),
         proxy_admission_wait_timeout_seconds=admission_wait_timeout_seconds,
+        **(
+            {"http_responses_session_bridge_response_create_timeout_seconds": response_create_timeout_seconds}
+            if response_create_timeout_seconds is not None
+            else {}
+        ),
         proxy_request_budget_seconds=75.0,
         compact_request_budget_seconds=75.0,
         transcription_request_budget_seconds=120.0,
@@ -238,6 +244,7 @@ def _install_bridge_settings_with_limits(
     max_sessions: int = 128,
     queue_limit: int = 8,
     admission_wait_timeout_seconds: float = 0.05,
+    response_create_timeout_seconds: float | None = None,
     codex_idle_ttl_seconds: float = 900.0,
     prompt_cache_idle_ttl_seconds: float = 3600.0,
     codex_prewarm_enabled: bool = False,
@@ -253,6 +260,7 @@ def _install_bridge_settings_with_limits(
             max_sessions=max_sessions,
             queue_limit=queue_limit,
             admission_wait_timeout_seconds=admission_wait_timeout_seconds,
+            response_create_timeout_seconds=response_create_timeout_seconds,
             codex_idle_ttl_seconds=codex_idle_ttl_seconds,
             codex_prewarm_enabled=codex_prewarm_enabled,
             instance_id=instance_id,
@@ -5737,6 +5745,7 @@ async def test_v1_responses_http_bridge_times_out_queued_request_on_bounded_star
         # so we still wait for the per-session response-create gate, but only
         # until the bounded startup timeout.
         admission_wait_timeout_seconds=0.01,
+        response_create_timeout_seconds=0.01,
     )
     account_id = await _import_account(
         async_client,

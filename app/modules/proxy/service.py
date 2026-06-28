@@ -739,6 +739,21 @@ def _proxy_admission_wait_timeout_seconds(settings: Any | None = None) -> float:
     return max(0.001, timeout)
 
 
+def _http_bridge_response_create_gate_wait_timeout_seconds(settings: Any | None = None) -> float:
+    settings = settings or get_settings()
+    admission_timeout = _proxy_admission_wait_timeout_seconds(settings)
+    raw_timeout = getattr(
+        settings,
+        "http_responses_session_bridge_response_create_timeout_seconds",
+        admission_timeout,
+    )
+    try:
+        bridge_timeout = float(raw_timeout)
+    except (TypeError, ValueError):
+        bridge_timeout = admission_timeout
+    return max(admission_timeout, bridge_timeout)
+
+
 # Maximum time (seconds) to wait for a prewarm upstream response before
 # giving up and letting the actual request proceed without prewarming.
 # A blocked prewarm holds the response_create_gate semaphore and prevents
@@ -1254,7 +1269,11 @@ class ProxyService(
         account_id: str | None = None,
         surface: str = "websocket",
     ) -> None:
-        timeout_seconds = _proxy_admission_wait_timeout_seconds()
+        timeout_seconds = (
+            _http_bridge_response_create_gate_wait_timeout_seconds()
+            if bridge_session is not None
+            else _proxy_admission_wait_timeout_seconds()
+        )
         request_state.response_create_gate = response_create_gate
         if account_id is not None:
             request_state.account_response_create_lease = await self._acquire_account_response_create_lease_or_overload(
