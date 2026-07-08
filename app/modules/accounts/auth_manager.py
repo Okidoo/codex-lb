@@ -10,6 +10,10 @@ from datetime import datetime
 from hashlib import sha256
 from typing import Any, Protocol, TypeAlias
 
+from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.core.auth import DEFAULT_PLAN, OpenAIAuthClaims, extract_id_token_claims
 from app.core.auth.refresh import RefreshError, TokenRefreshResult, refresh_access_token, should_refresh
 from app.core.balancer import PERMANENT_FAILURE_CODES, account_status_for_permanent_failure
@@ -18,7 +22,7 @@ from app.core.crypto import TokenEncryptor
 from app.core.plan_types import coerce_account_plan_type
 from app.core.upstream_proxy import UpstreamProxyRouteError, resolve_upstream_route
 from app.core.utils.time import utcnow
-from app.db.models import Account, AccountProvider, AccountStatus
+from app.db.models import Account, AccountProvider, AccountProxyBinding, AccountStatus
 from app.db.session import get_background_session
 from app.modules.proxy.account_cache import get_account_selection_cache, mark_account_routing_unavailable
 
@@ -169,7 +173,7 @@ class AuthManager:
         self._refresh_repo_factory = refresh_repo_factory
 
     async def ensure_fresh(self, account: Account, *, force: bool = False) -> Account:
-        if not _is_openai_account(account):
+        if (getattr(account, "provider", None) or AccountProvider.OPENAI.value) == AccountProvider.ZAI.value:
             return account
         if force or should_refresh(account.last_refresh):
             account = await _REFRESH_SINGLEFLIGHT.run(
@@ -202,8 +206,6 @@ class AuthManager:
             return await owned.refresh_account(account)
 
     async def refresh_account(self, account: Account) -> Account:
-        if not _is_openai_account(account):
-            return account
         refresh_token = self._encryptor.decrypt(account.refresh_token_encrypted)
         try:
             result = await self._refresh_tokens(refresh_token, account=account)
@@ -312,6 +314,14 @@ class AuthManager:
                         transport_error=True,
                         upstream_proxy_fail_closed_reason=exc.reason,
                     ) from exc
+                if route is None and await _account_has_active_proxy_binding(session, account.id):
+                    raise RefreshError(
+                        "upstream_proxy_unavailable",
+                        "Account has an active proxy binding but no route resolved",
+                        False,
+                        transport_error=True,
+                        upstream_proxy_fail_closed_reason="binding_route_unavailable",
+                    )
             return await _call_with_supported_optional_kwargs(
                 refresh_access_token,
                 refresh_token,
@@ -361,8 +371,14 @@ def _chatgpt_account_id_from_id_token(id_token: str) -> str | None:
     return auth_claims.chatgpt_account_id or claims.chatgpt_account_id
 
 
-def _refresh_singleflight_key(encryptor: TokenEncryptor, account: Account) -> _RefreshSingleflightKey:
-    return (account.id, _refresh_token_material_fingerprint(encryptor, account.refresh_token_encrypted))
+def _refresh_singleflight_key(
+    encryptor: TokenEncryptor,
+    account: Account,
+) -> _RefreshSingleflightKey:
+    return (
+        account.id,
+        _refresh_token_material_fingerprint(encryptor, account.refresh_token_encrypted),
+    )
 
 
 def _refresh_token_material_changed(
@@ -394,12 +410,6 @@ def _clean_optional(value: str | None) -> str | None:
     return cleaned or None
 
 
-def _is_openai_account(account: Account) -> bool:
-    return (getattr(account, "provider", AccountProvider.OPENAI.value) or AccountProvider.OPENAI.value) == (
-        AccountProvider.OPENAI.value
-    )
-
-
 async def _call_with_supported_optional_kwargs(
     func: Callable[..., Awaitable[Any]],
     /,
@@ -425,3 +435,18 @@ async def _call_with_supported_optional_kwargs(
 
 def _clear_refresh_singleflight_state() -> None:
     _REFRESH_SINGLEFLIGHT.clear()
+
+
+async def _account_has_active_proxy_binding(session: AsyncSession, account_id: str) -> bool:
+    try:
+        result = await session.execute(
+            select(AccountProxyBinding.id)
+            .where(
+                AccountProxyBinding.account_id == account_id,
+                AccountProxyBinding.is_active.is_(True),
+            )
+            .limit(1)
+        )
+        return result.scalar_one_or_none() is not None
+    except OperationalError:
+        return False

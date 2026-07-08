@@ -57,10 +57,13 @@ export const ApiKeySchema = z.object({
     .enum(SERVICE_TIERS)
     .nullable()
     .default(null),
+  usageSections: z.string().default("upstream_limits,account_pool_usage"),
   expiresAt: z.iso.datetime({ offset: true }).nullable(),
   isActive: z.boolean(),
   accountAssignmentScopeEnabled: z.boolean().default(false),
+  sourceAssignmentScopeEnabled: z.boolean().default(false),
   assignedAccountIds: z.array(z.string()).default([]),
+  assignedSourceIds: z.array(z.string()).default([]),
   createdAt: z.iso.datetime({ offset: true }),
   lastUsedAt: z.iso.datetime({ offset: true }).nullable(),
   limits: z.array(LimitRuleSchema).default([]),
@@ -69,6 +72,14 @@ export const ApiKeySchema = z.object({
   pooledRemainingPercentSecondary: z.number().nullable().default(null),
   pooledCapacityCreditsPrimary: z.number().default(0),
 });
+
+export const USAGE_SECTIONS = ["upstream_limits", "account_pool_usage"] as const;
+export type UsageSection = (typeof USAGE_SECTIONS)[number];
+
+export const USAGE_SECTION_LABELS: Record<UsageSection, string> = {
+  upstream_limits: "Upstream limits",
+  account_pool_usage: "Account pool usage",
+};
 
 export const ApiKeyCreateRequestSchema = z.object({
   name: z.string().min(1).max(128),
@@ -85,9 +96,11 @@ export const ApiKeyCreateRequestSchema = z.object({
     .enum(SERVICE_TIERS)
     .nullable()
     .optional(),
+  usageSections: z.string().optional(),
   weeklyTokenLimit: z.number().int().positive().nullable().optional(),
   expiresAt: z.iso.datetime({ offset: true }).nullable().optional(),
   assignedAccountIds: z.array(z.string()).optional(),
+  assignedSourceIds: z.array(z.string()).optional(),
   limits: z.array(LimitRuleCreateSchema).optional(),
 });
 
@@ -110,10 +123,12 @@ export const ApiKeyUpdateRequestSchema = z.object({
     .enum(SERVICE_TIERS)
     .nullable()
     .optional(),
+  usageSections: z.string().optional(),
   weeklyTokenLimit: z.number().int().positive().nullable().optional(),
   expiresAt: z.iso.datetime({ offset: true }).nullable().optional(),
   isActive: z.boolean().optional(),
   assignedAccountIds: z.array(z.string()).optional(),
+  assignedSourceIds: z.array(z.string()).optional(),
   limits: z.array(LimitRuleCreateSchema).optional(),
   resetUsage: z.boolean().optional(),
 });

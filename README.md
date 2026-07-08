@@ -10,9 +10,11 @@ Resources
 
 # codex-lb
 
+**English** | [简体中文](./README.zh-CN.md)
+
 Load balancer for ChatGPT accounts. Pool multiple accounts, track usage, manage API keys, view everything in a dashboard.
 
-This Okidoo fork keeps the upstream `codex-lb` idea intact: one OpenAI-compatible proxy endpoint for Codex and other clients, backed by a managed pool of accounts. The fork extends that pool beyond OpenAI accounts so the same Codex configuration can route GPT/Codex models to OpenAI accounts and GLM models to Z.AI coding-plan accounts. It also adds dashboard-managed model aliases, so teams can expose simple or dropdown-friendly model names while routing requests to the real upstream model behind the scenes.
+This Okidoo fork keeps the upstream `codex-lb` idea intact: one OpenAI-compatible proxy endpoint for Codex and other clients, backed by a managed pool of accounts. The fork extends that pool beyond OpenAI accounts so the same Codex configuration can route GPT/Codex models to OpenAI accounts and GLM models to Z.AI coding-plan accounts. It also reserves `gpt-5.2` as a static Codex Desktop / VS Code compatibility slug that is displayed as `GLM-5.2` and routed to `glm-5.2`.
 
 | ![dashboard](docs/screenshots/dashboard.jpg) | ![accounts](docs/screenshots/accounts.jpg) |
 |:---:|:---:|
@@ -46,9 +48,26 @@ This Okidoo fork keeps the upstream `codex-lb` idea intact: one OpenAI-compatibl
 <tr>
 <td><b>Provider-aware Accounts</b><br>Add OpenAI OAuth/import accounts or Z.AI API-key accounts</td>
 <td><b>GLM Routing</b><br>GLM model requests automatically use Z.AI accounts</td>
-<td><b>Model Aliases</b><br>Dashboard aliases such as <code>gpt-5.2</code> to <code>glm-5.2</code></td>
+<td><b>GLM Compatibility</b><br>Static <code>gpt-5.2</code> compatibility slug displayed as <code>GLM-5.2</code></td>
 </tr>
 </table>
+
+## Routing Strategy Guide
+
+The dashboard setting **Routing strategy** controls how eligible accounts are selected for each request. No strategy can guarantee account-safety outcomes; conservative use still depends on staying within OpenAI terms, using normal request volumes, and avoiding traffic patterns that would be unusual for your accounts.
+
+For low-volume, policy-compliant personal use, start with **Capacity weighted** or **Relative availability** and keep sticky threads enabled. Those strategies preserve session locality while avoiding sudden all-traffic shifts to a single account.
+
+| Routing strategy | Behavior | Trade-offs and recommended use |
+|---|---|---|
+| Capacity weighted | Prefers accounts with more usable quota headroom. | Good default for mixed pools and normal compliant usage. |
+| Relative availability | Draws from the strongest available accounts with configurable weighting. | Smooths distribution while still preferring healthier accounts. |
+| Usage weighted | Reacts to observed recent usage. | Useful when usage history should influence selection, but less direct than capacity-based routing. |
+| Round robin | Cycles evenly through eligible accounts. | Simple and predictable, but ignores quota shape and reset timing. |
+| Fill first | Uses one account heavily before moving on. | Best for controlled drain tests; less conservative for everyday traffic. |
+| Sequential drain | Drains accounts in a fixed order. | Useful for maintenance or explicit account rotation, not a normal safety-first default. |
+| Reset drain | Prioritizes capacity near reset windows. | Helps consume expiring quota, but can create timing-shaped bursts. |
+| Single account | Pins all traffic to one selected active account. | Useful for isolation and debugging; no load balancing. |
 
 ## Quick Start
 
@@ -113,13 +132,13 @@ Account selection is model-aware:
 - GLM model requests use Z.AI accounts and are translated from OpenAI Responses requests to Z.AI Chat Completions streaming.
 - Local GLM entries include `glm-4.7`, `glm-5`, `glm-5-turbo`, `glm-5.1`, and `glm-5.2`.
 
-The dashboard includes a **Models** page for aliases. Aliases are resolved before provider selection, quota filtering, and upstream forwarding. For example, the seeded alias:
+The fork keeps one static compatibility mapping for clients whose model dropdown only shows GPT-like slugs:
 
 ```text
 gpt-5.2 -> glm-5.2
 ```
 
-lets Codex or Codex Desktop select `gpt-5.2` while `codex-lb` routes the request through a Z.AI account as `glm-5.2`. This avoids patching Codex application bundles or asking every teammate to hand-edit a model catalog. Aliases can be edited, disabled, or deleted from the dashboard.
+lets Codex or Codex Desktop select `gpt-5.2` while `codex-lb` routes the request through a Z.AI account as `glm-5.2`. This avoids patching Codex application bundles or asking every teammate to hand-edit a model catalog. This mapping is a fork policy, not an editable dashboard alias system.
 
 ## Client Setup
 
@@ -605,7 +624,9 @@ Thanks goes to these wonderful people ([emoji key](https://allcontributors.org/e
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/n3crosis"><img src="https://avatars.githubusercontent.com/u/11072158?v=4?s=100" width="100px;" alt="n3crosis"/><br /><sub><b>n3crosis</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=n3crosis" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/commits?author=n3crosis" title="Tests">⚠️</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/copilot"><img src="https://github.com/copilot.png?s=100" width="100px;" alt="copilot"/><br /><sub><b>copilot</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=copilot" title="Code">💻</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/geoHeil"><img src="https://avatars.githubusercontent.com/u/1694964?v=4?s=100" width="100px;" alt="geoHeil"/><br /><sub><b>geoHeil</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=geoHeil" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/commits?author=geoHeil" title="Tests">⚠️</a></td>
+      <td align="center" valign="top" width="14.28%"><a href="https://github.com/ellentane"><img src="https://avatars.githubusercontent.com/u/70338266?v=4?s=100" width="100px;" alt="Jonáš Sivek"/><br /><sub><b>Jonáš Sivek</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=ellentane" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/commits?author=ellentane" title="Tests">⚠️</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/WangErgouaaaa"><img src="https://avatars.githubusercontent.com/u/117421439?v=4?s=100" width="100px;" alt="Guanwei Chen"/><br /><sub><b>Guanwei Chen</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=WangErgouaaaa" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/commits?author=WangErgouaaaa" title="Tests">⚠️</a></td>
+      <td align="center" valign="top" width="14.28%"><a href="https://github.com/LuoYe17"><img src="https://avatars.githubusercontent.com/u/191728117?v=4?s=100" width="100px;" alt="落叶"/><br /><sub><b>落叶</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=LuoYe17" title="Code">💻</a> <a href="https://github.com/Soju06/codex-lb/commits?author=LuoYe17" title="Documentation">📖</a> <a href="https://github.com/Soju06/codex-lb/commits?author=LuoYe17" title="Tests">⚠️</a> <a href="#translation-LuoYe17" title="Translation">🌍</a></td>
     </tr>
   </tbody>
 </table>

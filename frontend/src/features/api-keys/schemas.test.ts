@@ -81,6 +81,39 @@ describe("ApiKeySchema", () => {
     expect(parsed.pooledRemainingPercentSecondary).toBe(85.0);
     expect(parsed.pooledCapacityCreditsPrimary).toBe(225.0);
   });
+
+  it("parses assigned model source ids", () => {
+    const parsed = ApiKeySchema.parse({
+      id: "key-1",
+      name: "Service Key",
+      keyPrefix: "sk-live",
+      allowedModels: null,
+      sourceAssignmentScopeEnabled: true,
+      assignedSourceIds: ["src_vllm"],
+      expiresAt: null,
+      isActive: true,
+      createdAt: ISO,
+      lastUsedAt: null,
+    });
+
+    expect(parsed.sourceAssignmentScopeEnabled).toBe(true);
+    expect(parsed.assignedSourceIds).toEqual(["src_vllm"]);
+  });
+
+  it("defaults usage sections to both visible sections", () => {
+    const parsed = ApiKeySchema.parse({
+      id: "key-1",
+      name: "Service Key",
+      keyPrefix: "sk-live",
+      allowedModels: null,
+      expiresAt: null,
+      isActive: true,
+      createdAt: ISO,
+      lastUsedAt: null,
+    });
+
+    expect(parsed.usageSections).toBe("upstream_limits,account_pool_usage");
+  });
 });
 
 describe("ApiKeyCreateResponseSchema", () => {
@@ -107,9 +140,20 @@ describe("ApiKeyCreateRequestSchema", () => {
     const parsed = ApiKeyCreateRequestSchema.parse({
       name: "Scoped Key",
       assignedAccountIds: ["acc_primary"],
+      usageSections: "account_pool_usage",
     });
 
     expect(parsed.assignedAccountIds).toEqual(["acc_primary"]);
+    expect(parsed.usageSections).toBe("account_pool_usage");
+  });
+
+  it("accepts optional assigned model sources", () => {
+    const parsed = ApiKeyCreateRequestSchema.parse({
+      name: "Source Scoped Key",
+      assignedSourceIds: ["src_vllm"],
+    });
+
+    expect(parsed.assignedSourceIds).toEqual(["src_vllm"]);
   });
 
   it("accepts opportunistic traffic class in create payload", () => {
@@ -140,11 +184,13 @@ describe("ApiKeyUpdateRequestSchema", () => {
       weeklyTokenLimit: 50000,
       expiresAt: ISO,
       isActive: false,
+      usageSections: "upstream_limits",
     });
 
     expect(parsed.name).toBe("Updated Key");
     expect(parsed.applyToCodexModel).toBe(true);
     expect(parsed.isActive).toBe(false);
+    expect(parsed.usageSections).toBe("upstream_limits");
   });
 
   it("rejects invalid weeklyTokenLimit", () => {
@@ -172,6 +218,14 @@ describe("ApiKeyUpdateRequestSchema", () => {
     });
 
     expect(parsed.resetUsage).toBe(true);
+  });
+
+  it("accepts clearing assigned model sources", () => {
+    const parsed = ApiKeyUpdateRequestSchema.parse({
+      assignedSourceIds: [],
+    });
+
+    expect(parsed.assignedSourceIds).toEqual([]);
   });
 
   it("accepts opportunistic traffic class in update payload", () => {

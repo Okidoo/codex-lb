@@ -2,7 +2,6 @@ import { Check, Pencil, User, X } from "lucide-react";
 import { useState } from "react";
 
 import { isEmailLabel } from "@/components/blur-email";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
@@ -14,9 +13,14 @@ import { AccountUsagePanel } from "@/features/accounts/components/account-usage-
 import type {
   AccountRoutingPolicy,
   AccountSummary,
+  AccountUsageResetCredits,
 } from "@/features/accounts/schemas";
 import { useAccountTrends } from "@/features/accounts/hooks/use-accounts";
-import type { AccountProxyBindingRequest, UpstreamProxyAdmin } from "@/features/settings/schemas";
+import type {
+  AccountProxyBindingRequest,
+  UpstreamProxyAdmin,
+  UpstreamProxyEndpointTestResponse,
+} from "@/features/settings/schemas";
 import { formatCompactAccountId } from "@/utils/account-identifiers";
 import { formatSlug } from "@/utils/formatters";
 
@@ -28,10 +32,12 @@ export type AccountDetailProps = {
   onPause: (accountId: string) => void;
   onResume: (accountId: string) => void;
   onProbe: (accountId: string) => void;
+  onResetUsage: (accountId: string) => void;
   onSetAlias: (accountId: string, alias: string | null) => Promise<unknown>;
   onDelete: (accountId: string) => void;
   onReauth: () => void;
   onExportAuth: (accountId: string) => void;
+  onResetCredit: (accountId: string) => void;
   onLimitWarmupChange: (accountId: string, enabled: boolean) => void;
   onRoutingPolicyChange: (
     accountId: string,
@@ -40,6 +46,10 @@ export type AccountDetailProps = {
   onSecurityWorkAuthorizedChange: (accountId: string, enabled: boolean) => void;
   upstreamProxyAdmin?: UpstreamProxyAdmin | null;
   onProxyBindingSave?: (accountId: string, payload: AccountProxyBindingRequest) => Promise<unknown>;
+  onProxyEndpointTest?: (endpointId: string) => Promise<UpstreamProxyEndpointTestResponse>;
+  resetCredits?: AccountUsageResetCredits | null;
+  resetCreditsLoading?: boolean;
+  resetCreditsUnavailable?: boolean;
 };
 
 export function AccountDetail({
@@ -50,15 +60,21 @@ export function AccountDetail({
   onPause,
   onResume,
   onProbe,
+  onResetUsage,
   onSetAlias,
   onDelete,
   onReauth,
   onExportAuth,
+  onResetCredit,
   onLimitWarmupChange,
   onRoutingPolicyChange,
   onSecurityWorkAuthorizedChange,
   upstreamProxyAdmin = null,
   onProxyBindingSave,
+  onProxyEndpointTest,
+  resetCredits = null,
+  resetCreditsLoading = false,
+  resetCreditsUnavailable = false,
 }: AccountDetailProps) {
   const { data: trends } = useAccountTrends(account?.accountId ?? null);
   const blurred = usePrivacyStore((s) => s.blurred);
@@ -88,15 +104,23 @@ export function AccountDetail({
       ? account.email
       : null;
   const idSuffix = showAccountId ? ` (${compactId})` : "";
-  const workspaceLabel = account.chatgptAccountId || account.workspaceLabel || account.workspaceId || "Personal / unknown workspace";
-  const seatLabel = account.seatType ? ` | ${formatSlug(account.seatType)}` : "";
-  const provider = account.provider ?? "openai";
-  const isZaiAccount = provider === "zai";
+const workspaceLabel = account.chatgptAccountId || account.workspaceLabel || account.workspaceId || "Personal / unknown workspace";
+const seatLabel = account.seatType ? ` | ${formatSlug(account.seatType)}` : "";
+const isZai = account.provider === "zai";
+const operatorRecoveryAction =
+!isZai && (account.status === "reauth_required" || account.status === "deactivated");
+const usageResetDisabled =
+isZai ||
+busy ||
+readOnly ||
+account.status === "paused" ||
+operatorRecoveryAction ||
+(resetCredits?.availableCount ?? 0) <= 0;
 
   return (
     <div
       key={account.accountId}
-      className="animate-fade-in-up space-y-4 rounded-xl border bg-card p-5"
+      className="animate-fade-in-up min-w-0 space-y-4 rounded-xl border bg-card p-4 sm:p-5"
     >
       {/* Account header */}
       <div>
@@ -112,9 +136,6 @@ export function AccountDetail({
           readOnly={readOnly}
           onSetAlias={onSetAlias}
         />
-        <div className="mt-1.5">
-          <ProviderBadge provider={provider} />
-        </div>
         {emailSubtitle ? (
           <p
             className="mt-0.5 text-xs text-muted-foreground"
@@ -133,17 +154,26 @@ export function AccountDetail({
         </p>
       </div>
 
-      {onProxyBindingSave ? (
+{onProxyBindingSave && !isZai ? (
         <AccountProxyBinding
           account={account}
           admin={upstreamProxyAdmin}
           busy={busy}
           readOnly={readOnly}
           onSave={onProxyBindingSave}
+          onTestEndpoint={onProxyEndpointTest}
         />
       ) : null}
-      <AccountUsagePanel account={account} trends={trends} />
-      {isZaiAccount ? null : <AccountTokenInfo account={account} />}
+      <AccountUsagePanel
+        account={account}
+        trends={trends}
+        resetCredits={isZai ? null : resetCredits}
+        resetCreditsLoading={resetCreditsLoading}
+        resetCreditsUnavailable={resetCreditsUnavailable}
+        resetDisabled={usageResetDisabled}
+        onReset={isZai ? undefined : onResetUsage}
+      />
+{!isZai ? <AccountTokenInfo account={account} /> : null}
       <AccountActions
         account={account}
         busy={busy}
@@ -154,6 +184,7 @@ export function AccountDetail({
         onDelete={onDelete}
         onReauth={onReauth}
         onExportAuth={onExportAuth}
+        onResetCredit={onResetCredit}
         onLimitWarmupChange={onLimitWarmupChange}
         onRoutingPolicyChange={onRoutingPolicyChange}
         onSecurityWorkAuthorizedChange={onSecurityWorkAuthorizedChange}
@@ -251,7 +282,7 @@ function AccountNameField({
   }
 
   return (
-    <div className="flex items-center gap-1.5">
+    <div className="flex min-w-0 items-center gap-1.5">
       <h2 className="min-w-0 truncate text-base font-semibold">
         {labelIsEmail ? (
           <>
@@ -280,22 +311,5 @@ function AccountNameField({
         <Pencil className="size-3.5" />
       </Button>
     </div>
-  );
-}
-
-function ProviderBadge({ provider }: { provider: AccountSummary["provider"] }) {
-  const isZai = provider === "zai";
-  return (
-    <Badge
-      variant="outline"
-      className={cn(
-        "px-1.5 text-[11px]",
-        isZai
-          ? "border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300"
-          : "text-muted-foreground",
-      )}
-    >
-      {isZai ? "Z.AI" : "OpenAI"}
-    </Badge>
   );
 }

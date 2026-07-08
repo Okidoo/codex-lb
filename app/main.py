@@ -41,7 +41,8 @@ from app.core.resilience.backpressure import BackpressureMiddleware
 from app.core.resilience.bulkhead import BulkheadMiddleware, get_bulkhead
 from app.core.resilience.memory_monitor import configure as configure_memory_monitor
 from app.core.usage.refresh_scheduler import build_usage_refresh_scheduler
-from app.db.session import SessionLocal, close_db, init_background_db, init_db
+from app.core.usage.reset_credits_refresh_scheduler import build_rate_limit_reset_credits_scheduler
+from app.db.session import SessionLocal, close_db, close_session, init_background_db, init_db
 from app.modules.accounts import api as accounts_api
 from app.modules.api_keys import api as api_keys_api
 from app.modules.api_keys.reset_scheduler import build_api_key_limit_reset_scheduler
@@ -51,7 +52,9 @@ from app.modules.conversation_archive import api as conversation_archive_api
 from app.modules.dashboard import api as dashboard_api
 from app.modules.dashboard_auth import api as dashboard_auth_api
 from app.modules.firewall import api as firewall_api
+from app.modules.fleet import api as fleet_api
 from app.modules.health import api as health_api
+from app.modules.model_sources import api as model_sources_api
 from app.modules.oauth import api as oauth_api
 from app.modules.proxy import api as proxy_api
 from app.modules.proxy.durable_bridge_repository import missing_durable_bridge_tables
@@ -64,6 +67,7 @@ from app.modules.proxy.ring_membership import (
 )
 from app.modules.quota_planner import api as quota_planner_api
 from app.modules.quota_planner.scheduler import build_quota_planner_scheduler
+from app.modules.rate_limit_reset_credits import api as rate_limit_reset_credits_api
 from app.modules.reports import api as reports_api
 from app.modules.request_logs import api as request_logs_api
 from app.modules.runtime import api as runtime_api
@@ -152,12 +156,14 @@ async def lifespan(app: FastAPI):
     sticky_session_cleanup_scheduler = build_sticky_session_cleanup_scheduler()
     quota_planner_scheduler = build_quota_planner_scheduler()
     auth_guardian_scheduler = build_auth_guardian_scheduler()
+    rate_limit_reset_credits_scheduler = build_rate_limit_reset_credits_scheduler()
     await usage_scheduler.start()
     await api_key_limit_reset_scheduler.start()
     await model_scheduler.start()
     await sticky_session_cleanup_scheduler.start()
     await quota_planner_scheduler.start()
     await auth_guardian_scheduler.start()
+    await rate_limit_reset_credits_scheduler.start()
     if settings.metrics_enabled and PROMETHEUS_AVAILABLE:
         import uvicorn
 
@@ -318,6 +324,7 @@ async def lifespan(app: FastAPI):
         await model_scheduler.stop()
         await api_key_limit_reset_scheduler.stop()
         await usage_scheduler.stop()
+        await rate_limit_reset_credits_scheduler.stop()
         try:
             await close_http_client()
         finally:
@@ -388,6 +395,7 @@ def create_app() -> FastAPI:
     app.include_router(proxy_api.usage_router)
     app.include_router(audit_api.router)
     app.include_router(accounts_api.router)
+    app.include_router(rate_limit_reset_credits_api.router)
     app.include_router(dashboard_api.router)
     app.include_router(usage_api.router)
     app.include_router(request_logs_api.router)
@@ -399,16 +407,18 @@ def create_app() -> FastAPI:
     app.include_router(dashboard_auth_api.router)
     app.include_router(settings_api.router)
     app.include_router(firewall_api.router)
+    app.include_router(fleet_api.router)
     app.include_router(sticky_sessions_api.router)
     app.include_router(api_keys_api.router)
     app.include_router(codex_setup_api.router)
+    app.include_router(model_sources_api.router)
     app.include_router(health_api.router)
 
     static_dir = Path(__file__).parent / "static"
     index_html = static_dir / "index.html"
     static_root = static_dir.resolve()
     frontend_build_hint = "Frontend assets are missing. Run `cd frontend && bun run build`."
-    excluded_prefixes = ("api/", "v1/", "backend-api/", "codex/", "health")
+    excluded_prefixes = ("api/", "v1/", "backend-api/", "health")
 
     def _is_static_asset_path(path: str) -> bool:
         if path.startswith("assets/"):
@@ -447,7 +457,7 @@ async def _ensure_bridge_durable_schema_ready(settings) -> bool:
     try:
         missing_tables = await missing_durable_bridge_tables(session)
     finally:
-        await session.close()
+        await close_session(session)
     if not missing_tables:
         return True
     missing = ", ".join(missing_tables)

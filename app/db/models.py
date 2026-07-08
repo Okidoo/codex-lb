@@ -25,6 +25,8 @@ from sqlalchemy import (
 from sqlalchemy import Enum as SqlEnum
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
+from app.core.auth.dashboard_session_ttl import DEFAULT_DASHBOARD_SESSION_TTL_SECONDS
+
 
 class Base(DeclarativeBase):
     pass
@@ -169,6 +171,7 @@ class ZaiCredential(Base):
     )
     api_key_encrypted: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     api_key_hash: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    key_id: Mapped[str | None] = mapped_column(String, nullable=True)
     base_url: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
@@ -215,7 +218,10 @@ class AdditionalUsageHistory(Base):
 
 class RequestLog(Base):
     __tablename__ = "request_logs"
-    __table_args__ = (Index("idx_logs_useragent_group", "useragent_group"),)
+    __table_args__ = (
+        Index("idx_logs_useragent_group", "useragent_group"),
+        Index("idx_logs_client_ip", "client_ip"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     account_id: Mapped[str | None] = mapped_column(
@@ -223,9 +229,15 @@ class RequestLog(Base):
         ForeignKey("accounts.id", ondelete="SET NULL"),
         nullable=True,
     )
+    model_source_id: Mapped[str | None] = mapped_column(
+        String,
+        nullable=True,
+    )
+    model_source_kind: Mapped[str | None] = mapped_column(String, nullable=True)
     api_key_id: Mapped[str | None] = mapped_column(String, nullable=True)
     session_id: Mapped[str | None] = mapped_column(String, nullable=True)
     request_id: Mapped[str] = mapped_column(String, nullable=False)
+    archive_request_id: Mapped[str | None] = mapped_column(String, nullable=True)
     request_kind: Mapped[str] = mapped_column(
         String,
         default=RequestKind.NORMAL.value,
@@ -239,6 +251,7 @@ class RequestLog(Base):
     source: Mapped[str | None] = mapped_column(String, nullable=True)
     useragent: Mapped[str | None] = mapped_column(Text, nullable=True)
     useragent_group: Mapped[str | None] = mapped_column(String, nullable=True)
+    client_ip: Mapped[str | None] = mapped_column(String, nullable=True)
     transport: Mapped[str | None] = mapped_column(String, nullable=True)
     service_tier: Mapped[str | None] = mapped_column(String, nullable=True)
     requested_service_tier: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -269,6 +282,11 @@ class RequestLog(Base):
     account: Mapped[Account | None] = relationship(
         "Account",
         back_populates="request_logs",
+    )
+    model_source: Mapped["ModelSource | None"] = relationship(
+        "ModelSource",
+        back_populates="request_logs",
+        primaryjoin="foreign(RequestLog.model_source_id) == ModelSource.id",
     )
 
 
@@ -503,8 +521,8 @@ class DashboardSettings(Base):
     )
     dashboard_session_ttl_seconds: Mapped[int] = mapped_column(
         Integer,
-        default=43200,
-        server_default=text("43200"),
+        default=DEFAULT_DASHBOARD_SESSION_TTL_SECONDS,
+        server_default=text(str(DEFAULT_DASHBOARD_SESSION_TTL_SECONDS)),
         nullable=False,
     )
     import_without_overwrite: Mapped[bool] = mapped_column(
@@ -531,6 +549,12 @@ class DashboardSettings(Base):
     api_key_auth_enabled: Mapped[bool] = mapped_column(
         Boolean,
         default=False,
+        nullable=False,
+    )
+    hide_upstream_quota_from_api_keys: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        server_default=false(),
         nullable=False,
     )
     totp_secret_encrypted: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
@@ -612,6 +636,12 @@ class DashboardSettings(Base):
         server_default=text("3600"),
         nullable=False,
     )
+    limit_warmup_exhausted_threshold_percent: Mapped[float] = mapped_column(
+        Float,
+        default=99.0,
+        server_default=text("99.0"),
+        nullable=False,
+    )
     limit_warmup_min_available_percent: Mapped[float] = mapped_column(
         Float,
         default=100.0,
@@ -621,6 +651,18 @@ class DashboardSettings(Base):
         String,
         default="0,1,2,3,4,5,6",
         server_default=text("'0,1,2,3,4,5,6'"),
+        nullable=False,
+    )
+    weekly_pace_smoothing_minutes: Mapped[int] = mapped_column(
+        Integer,
+        default=30,
+        server_default=text("30"),
+        nullable=False,
+    )
+    limit_warmup_staggered_idle_enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        server_default=false(),
         nullable=False,
     )
     warmup_model: Mapped[str] = mapped_column(
@@ -681,6 +723,18 @@ class ApiKey(Base):
         server_default=false(),
         nullable=False,
     )
+    source_assignment_scope_enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        server_default=false(),
+        nullable=False,
+    )
+    usage_sections: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=False,
+        default="upstream_limits,account_pool_usage",
+        server_default="upstream_limits,account_pool_usage",
+    )
     expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
@@ -694,6 +748,12 @@ class ApiKey(Base):
     )
     account_assignments: Mapped[list["ApiKeyAccountAssignment"]] = relationship(
         "ApiKeyAccountAssignment",
+        back_populates="api_key",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+    source_assignments: Mapped[list["ApiKeyModelSourceAssignment"]] = relationship(
+        "ApiKeyModelSourceAssignment",
         back_populates="api_key",
         cascade="all, delete-orphan",
         lazy="selectin",
@@ -717,6 +777,122 @@ class ApiKeyAccountAssignment(Base):
 
     api_key: Mapped["ApiKey"] = relationship("ApiKey", back_populates="account_assignments")
     account: Mapped["Account"] = relationship("Account", back_populates="api_key_assignments")
+
+
+class ModelSource(Base):
+    __tablename__ = "model_sources"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    kind: Mapped[str] = mapped_column(
+        String,
+        default="openai_compatible",
+        server_default=text("'openai_compatible'"),
+        nullable=False,
+    )
+    base_url: Mapped[str] = mapped_column(String, nullable=False)
+    api_key_encrypted: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true(), nullable=False)
+    health_status: Mapped[str] = mapped_column(
+        String,
+        default="unknown",
+        server_default=text("'unknown'"),
+        nullable=False,
+    )
+    supports_chat_completions: Mapped[bool] = mapped_column(
+        Boolean,
+        default=True,
+        server_default=true(),
+        nullable=False,
+    )
+    supports_responses: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        server_default=false(),
+        nullable=False,
+    )
+    supports_audio_transcriptions: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        server_default=false(),
+        nullable=False,
+    )
+    timeout_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_concurrency: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    models: Mapped[list["ModelSourceModel"]] = relationship(
+        "ModelSourceModel",
+        back_populates="source",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+    api_key_assignments: Mapped[list["ApiKeyModelSourceAssignment"]] = relationship(
+        "ApiKeyModelSourceAssignment",
+        back_populates="source",
+        cascade="all, delete-orphan",
+    )
+    request_logs: Mapped[list["RequestLog"]] = relationship(
+        "RequestLog",
+        back_populates="model_source",
+        primaryjoin="ModelSource.id == foreign(RequestLog.model_source_id)",
+        viewonly=True,
+    )
+
+
+class ModelSourceModel(Base):
+    __tablename__ = "model_source_models"
+    __table_args__ = (UniqueConstraint("source_id", "model", name="uq_model_source_models_source_model"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_id: Mapped[str] = mapped_column(String, ForeignKey("model_sources.id", ondelete="CASCADE"), nullable=False)
+    model: Mapped[str] = mapped_column(String, nullable=False)
+    display_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    context_window: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    supports_streaming: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true(), nullable=False)
+    supports_tools: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false(), nullable=False)
+    supports_vision: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false(), nullable=False)
+    input_per_1m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    cached_input_per_1m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    output_per_1m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    audio_per_minute: Mapped[float | None] = mapped_column(Float, nullable=True)
+    raw_metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true(), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    source: Mapped["ModelSource"] = relationship("ModelSource", back_populates="models")
+
+
+class ApiKeyModelSourceAssignment(Base):
+    __tablename__ = "api_key_model_sources"
+
+    api_key_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("api_keys.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    source_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("model_sources.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
+
+    api_key: Mapped["ApiKey"] = relationship("ApiKey", back_populates="source_assignments")
+    source: Mapped["ModelSource"] = relationship("ModelSource", back_populates="api_key_assignments")
 
 
 class LimitType(str, Enum):
@@ -1094,9 +1270,25 @@ Index(
 Index("idx_accounts_email", Account.email)
 Index("idx_api_keys_name", ApiKey.name)
 Index("idx_logs_account_time", RequestLog.account_id, RequestLog.requested_at)
+Index("idx_logs_model_source_time", RequestLog.model_source_id, RequestLog.requested_at)
 Index("idx_logs_api_key_time", RequestLog.api_key_id, RequestLog.requested_at.desc(), RequestLog.id.desc())
 Index("idx_logs_api_key_time_account", RequestLog.api_key_id, RequestLog.requested_at.desc(), RequestLog.account_id)
 Index("idx_logs_request_kind_time", RequestLog.request_kind, RequestLog.requested_at.desc(), RequestLog.id.desc())
+Index(
+    "idx_logs_account_kind_deleted_latest",
+    RequestLog.account_id,
+    RequestLog.request_kind,
+    RequestLog.deleted_at,
+    RequestLog.requested_at,
+    RequestLog.id,
+)
+Index(
+    "idx_logs_account_request_latest",
+    RequestLog.account_id,
+    RequestLog.request_id,
+    RequestLog.requested_at,
+    RequestLog.id,
+)
 Index("idx_logs_requested_at", RequestLog.requested_at)
 Index("idx_logs_source_requested_at", RequestLog.source, RequestLog.requested_at.desc())
 Index("idx_logs_requested_at_id", RequestLog.requested_at.desc(), RequestLog.id.desc())
@@ -1151,6 +1343,8 @@ Index(
 )
 Index("idx_account_limit_warmups_status_attempted", AccountLimitWarmup.status, AccountLimitWarmup.attempted_at.desc())
 Index("idx_api_key_accounts_account_id", ApiKeyAccountAssignment.account_id)
+Index("idx_api_key_model_sources_source_id", ApiKeyModelSourceAssignment.source_id)
+Index("idx_model_source_models_model_enabled", ModelSourceModel.model, ModelSourceModel.is_enabled)
 Index("idx_api_key_limits_key_id", ApiKeyLimit.api_key_id)
 Index("idx_api_key_limits_reset_at", ApiKeyLimit.reset_at)
 Index("idx_api_key_usage_reservations_key_id", ApiKeyUsageReservation.api_key_id)
@@ -1220,4 +1414,13 @@ Index(
     AdditionalUsageHistory.window,
     AdditionalUsageHistory.account_id,
     AdditionalUsageHistory.recorded_at,
+)
+Index(
+    "ix_additional_usage_quota_window_latest",
+    AdditionalUsageHistory.quota_key,
+    AdditionalUsageHistory.window,
+    AdditionalUsageHistory.account_id,
+    AdditionalUsageHistory.recorded_at.desc(),
+    AdditionalUsageHistory.used_percent.desc(),
+    AdditionalUsageHistory.id.desc(),
 )

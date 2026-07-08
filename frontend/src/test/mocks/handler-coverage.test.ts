@@ -22,9 +22,11 @@ function extractHandlerPaths(): string[] {
 const EXPECTED_ENDPOINTS = [
 	// health
 	"GET /health",
-	// runtime
-	"GET /api/runtime/version",
-	// dashboard
+  // runtime
+  "GET /api/runtime/version",
+  // codex setup
+  "GET /codex/setup",
+  // dashboard
 	"GET /api/dashboard/overview",
 	"GET /api/dashboard/projections",
 	"GET /api/request-logs",
@@ -40,6 +42,8 @@ const EXPECTED_ENDPOINTS = [
 	"PUT /api/accounts/:accountId/limit-warmup",
 	"PUT /api/accounts/:accountId/routing-policy",
 	"GET /api/accounts/:accountId/trends",
+	"GET /api/accounts/:accountId/usage-reset-credits",
+	"POST /api/accounts/:accountId/usage-reset-credits/consume",
 	"POST /api/accounts/:accountId/export",
 	"POST /api/accounts/:accountId/export/auth",
 	"DELETE /api/accounts/:accountId",
@@ -87,7 +91,10 @@ const EXPECTED_ENDPOINTS = [
 	"DELETE /api/firewall/ips/:ipAddress",
 	// models
 	"GET /api/models",
-	"GET /codex/setup",
+	"GET /api/model-sources/",
+	"POST /api/model-sources/",
+	"PATCH /api/model-sources/:sourceId",
+	"DELETE /api/model-sources/:sourceId",
 	// api-keys
 	"GET /api/api-keys/",
 	"POST /api/api-keys/",

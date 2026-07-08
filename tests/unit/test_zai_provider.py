@@ -260,14 +260,16 @@ async def test_zai_stream_translation_text_tool_usage_and_done() -> None:
 @pytest.mark.asyncio
 async def test_glm_models_survive_registry_refresh() -> None:
     registry = ModelRegistry()
-    assert "glm-5.1" in registry.get_models_with_fallback()
-    assert registry.plan_types_for_model("glm-5.1") == frozenset({"zai"})
-    assert registry.prefers_websockets("glm-5.1") is False
+    assert "glm-5.2" in registry.get_models_with_fallback()
+    assert "gpt-5.2" in registry.get_models_with_fallback()
+    assert registry.plan_types_for_model("glm-5.2") == frozenset({"zai"})
+    assert registry.prefers_websockets("glm-5.2") is False
 
     await registry.update({"plus": []})
 
-    assert "glm-5.1" in registry.get_models_with_fallback()
-    assert registry.plan_types_for_model("glm-5.1") == frozenset({"zai"})
+    assert "glm-5.2" in registry.get_models_with_fallback()
+    assert "gpt-5.2" in registry.get_models_with_fallback()
+    assert registry.plan_types_for_model("glm-5.2") == frozenset({"zai"})
     assert registry.plan_types_for_model("gpt-5.2") == frozenset({"zai"})
 
 

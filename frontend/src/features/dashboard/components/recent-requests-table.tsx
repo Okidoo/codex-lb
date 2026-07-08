@@ -32,6 +32,7 @@ import {
   formatCompactNumber,
   formatCurrency,
   formatModelLabel,
+  formatElapsed,
   formatSlug,
   formatTimeLong,
 } from "@/utils/formatters";
@@ -360,6 +361,7 @@ export function RecentRequestsTable({
                 <RequestDetailField label="Model" value={selectedRequest ? formatModelLabel(selectedRequest.model, selectedRequest.reasoningEffort, selectedRequest.actualServiceTier ?? selectedRequest.serviceTier) : "—"} mono />
                 <RequestDetailField label="Request kind" value={selectedRequest ? (REQUEST_KIND_LABELS[selectedRequest.requestKind] ?? selectedRequest.requestKind) : "—"} />
                 <RequestDetailField label="Plan" value={selectedRequest?.planType ? formatSlug(selectedRequest.planType) : "—"} />
+                <RequestDetailField label="Elapsed" value={formatElapsed(selectedRequest?.latencyMs ?? null)} />
               </div>
               <div className="grid gap-3 sm:grid-cols-3">
                 <RequestDetailField label="Transport" value={selectedRequest?.transport ? (TRANSPORT_LABELS[selectedRequest.transport] ?? selectedRequest.transport) : "—"} />
@@ -370,12 +372,22 @@ export function RecentRequestsTable({
                 label="User Agent"
                 value={selectedRequest?.useragent ?? "—"}
                 copyValue={selectedRequest?.useragent ?? undefined}
-                copyLabel="Copy"
+                copyLabel="Copy User Agent"
+                compactCopy
+              />
+              <RequestDetailField
+                label="Client IP"
+                value={selectedRequest?.clientIp ?? "—"}
+                copyValue={selectedRequest?.clientIp ?? undefined}
+                copyLabel="Copy Client IP"
                 compactCopy
               />
             </div>
 
-            <RequestArchivePanel requestId={selectedRequest?.requestId} requestedAt={selectedRequest?.requestedAt} />
+            <RequestArchivePanel
+              requestId={selectedRequest?.archiveRequestId ?? selectedRequest?.requestId}
+              requestedAt={selectedRequest?.requestedAt}
+            />
 
             {selectedRequestCostSummary ? (
               <div className="space-y-2">

@@ -10,9 +10,13 @@ import { AccountDetail } from "@/features/accounts/components/account-detail";
 import { AccountList } from "@/features/accounts/components/account-list";
 import { AccountsSkeleton } from "@/features/accounts/components/accounts-skeleton";
 import { ImportDialog } from "@/features/accounts/components/import-dialog";
+import { ResetCreditConfirmDialog } from "@/features/accounts/components/reset-credit-confirm-dialog";
 import { ZaiAccountDialog } from "@/features/accounts/components/zai-account-dialog";
 import { AuthExportDialog } from "@/features/accounts/components/auth-export-dialog";
-import { useAccounts } from "@/features/accounts/hooks/use-accounts";
+import {
+  useAccounts,
+  useAccountUsageResetCredits,
+} from "@/features/accounts/hooks/use-accounts";
 import {
   DEFAULT_ACCOUNT_SORT_MODE,
   sortAccountsForDisplay,
@@ -42,13 +46,14 @@ export function AccountsPage() {
     resumeMutation,
     setAliasMutation,
     probeMutation,
+    usageResetMutation,
     limitWarmupMutation,
     updateMutation,
     deleteMutation,
     routingPolicyMutation,
     exportAuthMutation,
   } = useAccounts();
-  const { upstreamProxyQuery, accountBindingMutation } = useUpstreamProxyAdmin();
+  const { upstreamProxyQuery, accountBindingMutation, testEndpointMutation } = useUpstreamProxyAdmin();
   const oauth = useOauth();
   const canWrite = useAuthStore((state) => state.canWrite);
 
@@ -56,6 +61,9 @@ export function AccountsPage() {
   const oauthDialog = useDialogState();
   const zaiDialog = useDialogState();
   const deleteDialog = useDialogState<string>();
+  type ResetCreditDialogTarget = { accountId: string; availableResetCredits: number };
+  const resetCreditDialog = useDialogState<ResetCreditDialogTarget>();
+  const usageResetDialog = useDialogState<string>();
   const exportDialog = useDialogState<AccountAuthExportResponse>();
   const [deleteHistory, setDeleteHistory] = useState(false);
 
@@ -101,6 +109,7 @@ export function AccountsPage() {
         : null,
     [accounts, resolvedSelectedAccountId],
   );
+  const resetCreditsQuery = useAccountUsageResetCredits(selectedAccount?.accountId ?? null);
 
   const mutationBusy =
     importMutation.isPending ||
@@ -109,12 +118,14 @@ export function AccountsPage() {
     resumeMutation.isPending ||
     setAliasMutation.isPending ||
     probeMutation.isPending ||
+    usageResetMutation.isPending ||
     limitWarmupMutation.isPending ||
     deleteMutation.isPending ||
     routingPolicyMutation.isPending ||
     exportAuthMutation.isPending ||
     updateMutation.isPending ||
-    accountBindingMutation.isPending;
+    accountBindingMutation.isPending ||
+    testEndpointMutation.isPending;
 
   const mutationError =
     getErrorMessageOrNull(importMutation.error) ||
@@ -123,13 +134,15 @@ export function AccountsPage() {
     getErrorMessageOrNull(resumeMutation.error) ||
     getErrorMessageOrNull(setAliasMutation.error) ||
     getErrorMessageOrNull(probeMutation.error) ||
+    getErrorMessageOrNull(usageResetMutation.error) ||
     getErrorMessageOrNull(limitWarmupMutation.error) ||
     getErrorMessageOrNull(deleteMutation.error) ||
     getErrorMessageOrNull(routingPolicyMutation.error) ||
     getErrorMessageOrNull(exportAuthMutation.error) ||
     getErrorMessageOrNull(updateMutation.error) ||
     getErrorMessageOrNull(upstreamProxyQuery.error) ||
-    getErrorMessageOrNull(accountBindingMutation.error);
+    getErrorMessageOrNull(accountBindingMutation.error) ||
+    getErrorMessageOrNull(testEndpointMutation.error);
 
   return (
     <div className="animate-fade-in-up space-y-6">
@@ -148,19 +161,27 @@ export function AccountsPage() {
       {!accountsQuery.data ? (
         <AccountsSkeleton />
       ) : (
-        <div className="grid gap-4 lg:grid-cols-[22rem_minmax(0,1fr)]">
-          <div className="rounded-xl border bg-card p-4">
-            <AccountList
-              accounts={accounts}
-              selectedAccountId={resolvedSelectedAccountId}
-              onSelect={handleSelectAccount}
-              sortMode={accountSortMode}
-              onSortModeChange={setAccountSortMode}
+        <div
+          data-testid="accounts-layout"
+          className="grid min-w-0 grid-cols-1 gap-4 lg:grid-cols-[minmax(18rem,22rem)_minmax(0,1fr)]"
+        >
+          <div
+            data-testid="accounts-list-panel"
+            className="min-w-0 min-h-0 h-full"
+          >
+            <div className="flex h-full min-h-0 min-w-0 flex-col rounded-xl border bg-card p-3 sm:p-4">
+              <AccountList
+                accounts={accounts}
+                selectedAccountId={resolvedSelectedAccountId}
+                onSelect={handleSelectAccount}
+                sortMode={accountSortMode}
+                onSortModeChange={setAccountSortMode}
                 onOpenImport={() => importDialog.show()}
                 onOpenOauth={() => oauthDialog.show()}
                 onOpenZai={() => zaiDialog.show()}
                 readOnly={!canWrite}
               />
+            </div>
           </div>
 
           <AccountDetail
@@ -170,9 +191,8 @@ export function AccountsPage() {
             readOnly={!canWrite}
             onPause={(accountId) => void pauseMutation.mutateAsync(accountId)}
             onResume={(accountId) => void resumeMutation.mutateAsync(accountId)}
-            onProbe={(accountId) =>
-              void probeMutation.mutateAsync({ accountId })
-            }
+            onProbe={(accountId) => void probeMutation.mutateAsync({ accountId })}
+            onResetUsage={(accountId) => usageResetDialog.show(accountId)}
             onSetAlias={(accountId, alias) =>
               setAliasMutation.mutateAsync({ accountId, alias })
             }
@@ -183,6 +203,13 @@ export function AccountsPage() {
                 .mutateAsync(accountId)
                 .then((result) => exportDialog.show(result))
                 .catch(() => null);
+            }}
+            onResetCredit={(accountId) => {
+              const account = accountsQuery.data?.find((item) => item.accountId === accountId);
+              resetCreditDialog.show({
+                accountId,
+                availableResetCredits: account?.availableResetCredits ?? 0,
+              });
             }}
             onLimitWarmupChange={(accountId, enabled) =>
               void limitWarmupMutation.mutateAsync({ accountId, enabled })
@@ -203,6 +230,10 @@ export function AccountsPage() {
             onProxyBindingSave={(accountId, payload) =>
               accountBindingMutation.mutateAsync({ accountId, payload })
             }
+            onProxyEndpointTest={(endpointId) => testEndpointMutation.mutateAsync(endpointId)}
+            resetCredits={resetCreditsQuery.data?.rateLimitResetCredits ?? null}
+            resetCreditsLoading={resetCreditsQuery.isFetching}
+            resetCreditsUnavailable={!!resetCreditsQuery.error}
           />
         </div>
       )}
@@ -251,6 +282,15 @@ export function AccountsPage() {
         onOpenChange={exportDialog.onOpenChange}
       />
 
+      {resetCreditDialog.data ? (
+        <ResetCreditConfirmDialog
+          open={resetCreditDialog.open}
+          accountId={resetCreditDialog.data.accountId}
+          summaryAvailableCount={resetCreditDialog.data.availableResetCredits}
+          onOpenChange={resetCreditDialog.onOpenChange}
+        />
+      ) : null}
+
       <ConfirmDialog
         open={deleteDialog.open}
         title="Delete account"
@@ -287,6 +327,25 @@ export function AccountsPage() {
           </label>
         </div>
       </ConfirmDialog>
+
+      <ConfirmDialog
+        open={usageResetDialog.open}
+        title="Reset usage"
+        description="This consumes one upstream usage reset credit for the selected account, then fetches fresh usage."
+        confirmLabel="Reset"
+        cancelLabel="Cancel"
+        onOpenChange={usageResetDialog.onOpenChange}
+        onConfirm={() => {
+          if (!usageResetDialog.data) {
+            return;
+          }
+          void usageResetMutation
+            .mutateAsync({ accountId: usageResetDialog.data })
+            .finally(() => {
+              usageResetDialog.hide();
+            });
+        }}
+      />
 
       <LoadingOverlay
         visible={!!accountsQuery.data && mutationBusy}

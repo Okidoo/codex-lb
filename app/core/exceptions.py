@@ -82,3 +82,13 @@ class DashboardRateLimitError(AppError):
     def __init__(self, message: str, *, retry_after: int, code: str | None = None) -> None:
         self.retry_after = retry_after
         super().__init__(message, code=code)
+
+
+class DashboardUpstreamError(AppError):
+    status_code = 502
+    code = "upstream_error"
+
+
+class DashboardServiceUnavailableError(AppError):
+    status_code = 503
+    code = "service_unavailable"
