@@ -797,6 +797,12 @@ class ApiKey(Base):
         cascade="all, delete-orphan",
         lazy="selectin",
     )
+    chrome_debug_grant: Mapped["ChromeDebugApiKeyGrant | None"] = relationship(
+        "ChromeDebugApiKeyGrant",
+        back_populates="api_key",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
 
 
 class ApiKeyAccountAssignment(Base):
@@ -932,6 +938,155 @@ class ApiKeyModelSourceAssignment(Base):
 
     api_key: Mapped["ApiKey"] = relationship("ApiKey", back_populates="source_assignments")
     source: Mapped["ModelSource"] = relationship("ModelSource", back_populates="api_key_assignments")
+
+
+class ChromeDebugApiKeyGrant(Base):
+    __tablename__ = "chrome_debug_api_key_grants"
+
+    api_key_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("api_keys.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    api_key: Mapped["ApiKey"] = relationship("ApiKey", back_populates="chrome_debug_grant")
+    browsers: Mapped[list["ChromeDebugBrowser"]] = relationship("ChromeDebugBrowser", back_populates="grant")
+
+
+class ChromeDebugBrowser(Base):
+    __tablename__ = "chrome_debug_browsers"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    api_key_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("chrome_debug_api_key_grants.api_key_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    label: Mapped[str] = mapped_column(String(128), nullable=False)
+    instance_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(Text, nullable=True)
+    extension_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    is_revoked: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false(), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    disconnected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    grant: Mapped["ChromeDebugApiKeyGrant"] = relationship("ChromeDebugApiKeyGrant", back_populates="browsers")
+    agent_tokens: Mapped[list["ChromeDebugAgentToken"]] = relationship(
+        "ChromeDebugAgentToken",
+        back_populates="browser",
+        cascade="all, delete-orphan",
+    )
+    relay_tokens: Mapped[list["ChromeDebugRelayToken"]] = relationship(
+        "ChromeDebugRelayToken",
+        back_populates="browser",
+        cascade="all, delete-orphan",
+    )
+    sessions: Mapped[list["ChromeDebugSession"]] = relationship(
+        "ChromeDebugSession",
+        back_populates="browser",
+        cascade="all, delete-orphan",
+    )
+
+
+class ChromeDebugAgentToken(Base):
+    __tablename__ = "chrome_debug_agent_tokens"
+
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    browser_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("chrome_debug_browsers.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    api_key_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("api_keys.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    browser: Mapped["ChromeDebugBrowser"] = relationship("ChromeDebugBrowser", back_populates="agent_tokens")
+
+
+class ChromeDebugRelayToken(Base):
+    __tablename__ = "chrome_debug_relay_tokens"
+
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    browser_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("chrome_debug_browsers.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    api_key_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("api_keys.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    browser: Mapped["ChromeDebugBrowser"] = relationship("ChromeDebugBrowser", back_populates="relay_tokens")
+
+
+class ChromeDebugSession(Base):
+    __tablename__ = "chrome_debug_sessions"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    browser_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("chrome_debug_browsers.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    api_key_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("api_keys.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    target_id: Mapped[str] = mapped_column(Text, nullable=False)
+    state: Mapped[str] = mapped_column(String(32), default="active", server_default=text("'active'"), nullable=False)
+    connected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    browser: Mapped["ChromeDebugBrowser"] = relationship("ChromeDebugBrowser", back_populates="sessions")
+
+
+class ChromeDebugAuditEvent(Base):
+    __tablename__ = "chrome_debug_audit_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    event_type: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    api_key_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    browser_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    session_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    target_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    actor_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    details_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
 class LimitType(str, Enum):

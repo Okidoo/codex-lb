@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Codex LB Chrome Debug</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>Codex LB Chrome Debug</h1>
+        <span id="status" class="status">Off</span>
+      </header>
+      <label>
+        Server URL
+        <input id="serverUrl" type="url" placeholder="https://codex.example.com" autocomplete="off" />
+      </label>
+      <label>
+        API key
+        <input id="apiKey" type="password" placeholder="sk-clb-..." autocomplete="off" />
+      </label>
+      <label>
+        Browser label
+        <input id="label" type="text" placeholder="Mac Chrome" autocomplete="off" />
+      </label>
+      <div class="actions">
+        <button id="save" type="button">Save</button>
+        <button id="toggle" type="button">Turn on</button>
+      </div>
+      <p id="message" class="message"></p>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>

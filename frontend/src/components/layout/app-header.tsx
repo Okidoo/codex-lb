@@ -18,6 +18,7 @@ const NAV_ITEMS = [
   { to: "/accounts", labelKey: "nav.accounts" },
   { to: "/automations", labelKey: "nav.automations" },
   { to: "/apis", labelKey: "nav.apis" },
+  { to: "/chrome-debug", labelKey: "nav.chromeDebug" },
   { to: "/settings", labelKey: "nav.settings" },
 ] as const;
 

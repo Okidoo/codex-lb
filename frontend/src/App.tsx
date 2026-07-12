@@ -9,6 +9,7 @@ import { useAuthStore } from "@/features/auth/hooks/use-auth";
 import { AccountsPage } from "@/features/accounts/components/accounts-page";
 import { AutomationsPage } from "@/features/automations/components/automations-page";
 import { ApisPage } from "@/features/apis/components/apis-page";
+import { ChromeDebugPage } from "@/features/chrome-debug/components/chrome-debug-page";
 import { DashboardPage } from "@/features/dashboard/components/dashboard-page";
 import { CodexSetupPage } from "@/features/codex-setup/components/codex-setup-page";
 import { ReportsPage } from "@/features/reports/components/reports-page";
@@ -56,6 +57,7 @@ export default function App() {
             <Route path="/models" element={<CodexSetupPage />} />
             <Route path="/automations" element={<AutomationsPage />} />
             <Route path="/apis" element={<ApisPage />} />
+            <Route path="/chrome-debug" element={<ChromeDebugPage />} />
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="/firewall" element={<Navigate to="/settings" replace />} />
           </Route>

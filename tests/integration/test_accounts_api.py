@@ -74,7 +74,7 @@ async def test_import_and_list_accounts(async_client):
 
 @pytest.mark.asyncio
 async def test_create_list_and_delete_zai_account_stores_encrypted_credential(async_client):
-    api_key = "fc23f148aa484f87b35f0d8198ea6a11.17TuwDYKtVz0oCTh"
+    api_key = "00000000000000000000000000000000.test-secret-for-integration"
     base_url = "https://api.z.ai/api/coding/paas/v4"
 
     response = await async_client.post(
@@ -103,7 +103,7 @@ async def test_create_list_and_delete_zai_account_stores_encrypted_credential(as
         assert credential is not None
         assert credential.api_key_encrypted != api_key.encode()
         assert TokenEncryptor().decrypt(credential.api_key_encrypted) == api_key
-        assert credential.key_id == "fc23f148aa484f87b35f0d8198ea6a11"
+        assert credential.key_id == "00000000000000000000000000000000"
         assert credential.base_url == base_url
         assert credential.api_key_hash
 

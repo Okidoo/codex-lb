@@ -303,6 +303,32 @@ type MockState = {
   >;
   modelSources: ModelSource[];
   firewallEntries: Array<{ ipAddress: string; createdAt: string }>;
+  chromeDebugGrantIds: string[];
+  chromeDebugBrowsers: Array<{
+    id: string;
+    apiKeyId: string;
+    apiKeyName: string | null;
+    label: string;
+    status: "online" | "offline";
+    targetCount: number;
+    targets: Array<{
+      id: string;
+      type: string;
+      title: string;
+      url: string;
+      attached: boolean;
+      browserContextId: string | null;
+      raw: Record<string, unknown>;
+    }>;
+    instanceId: string | null;
+    userAgent: string | null;
+    extensionVersion: string | null;
+    isRevoked: boolean;
+    createdAt: string;
+    updatedAt: string;
+    lastSeenAt: string | null;
+    disconnectedAt: string | null;
+  }>;
   stickySessions: Array<{
     key: string;
     displayName: string;
@@ -329,6 +355,36 @@ function createInitialState(): MockState {
     automationRuns: {},
     modelSources: createDefaultModelSources(),
     firewallEntries: [],
+    chromeDebugGrantIds: ["key_1"],
+    chromeDebugBrowsers: [
+      {
+        id: "browser_primary",
+        apiKeyId: "key_1",
+        apiKeyName: "Default key",
+        label: "Work Chrome",
+        status: "online",
+        targetCount: 1,
+        targets: [
+          {
+            id: "target_primary",
+            type: "page",
+            title: "Codex LB",
+            url: "https://codex.okidoo.co/dashboard",
+            attached: false,
+            browserContextId: null,
+            raw: {},
+          },
+        ],
+        instanceId: "local",
+        userAgent: "Chrome/118 test",
+        extensionVersion: "0.1.0",
+        isRevoked: false,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        lastSeenAt: new Date().toISOString(),
+        disconnectedAt: null,
+      },
+    ],
     stickySessions: [],
   };
 }
@@ -2100,6 +2156,88 @@ export const handlers = [
       }),
     );
     return new HttpResponse(null, { status: 204 });
+  }),
+
+  http.get("/api/chrome-debug/grants", () => {
+    return HttpResponse.json({
+      grants: state.apiKeys.map((apiKey) => {
+        const browsers = state.chromeDebugBrowsers.filter(
+          (browser) => browser.apiKeyId === apiKey.id && !browser.isRevoked,
+        );
+        return {
+          apiKeyId: apiKey.id,
+          apiKeyName: apiKey.name,
+          keyPrefix: apiKey.keyPrefix,
+          enabled: state.chromeDebugGrantIds.includes(apiKey.id),
+          browserCount: browsers.length,
+          onlineBrowserCount: browsers.filter((browser) => browser.status === "online").length,
+        };
+      }),
+    });
+  }),
+
+  http.put("/api/chrome-debug/grants/:apiKeyId", async ({ params, request }) => {
+    const apiKeyId = String(params.apiKeyId);
+    if (!findApiKey(apiKeyId)) {
+      return HttpResponse.json({ error: { code: "not_found", message: "API key not found" } }, { status: 404 });
+    }
+    const payload = await parseJsonBody(request, z.object({ enabled: z.boolean() }));
+    if (payload?.enabled) {
+      state.chromeDebugGrantIds = Array.from(new Set([...state.chromeDebugGrantIds, apiKeyId]));
+    } else {
+      state.chromeDebugGrantIds = state.chromeDebugGrantIds.filter((id) => id !== apiKeyId);
+    }
+    return new HttpResponse(null, { status: 204 });
+  }),
+
+  http.get("/api/chrome-debug/browsers", () => {
+    return HttpResponse.json({
+      browsers: state.chromeDebugBrowsers.filter((browser) => !browser.isRevoked),
+    });
+  }),
+
+  http.delete("/api/chrome-debug/browsers/:browserId", ({ params }) => {
+    const browserId = String(params.browserId);
+    state.chromeDebugBrowsers = state.chromeDebugBrowsers.map((browser) =>
+      browser.id === browserId
+        ? {
+            ...browser,
+            status: "offline",
+            isRevoked: true,
+            disconnectedAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          }
+        : browser,
+    );
+    return new HttpResponse(null, { status: 204 });
+  }),
+
+  http.post("/api/chrome-debug/browsers/:browserId/relay-token", ({ params }) => {
+    const browserId = String(params.browserId);
+    const browser = state.chromeDebugBrowsers.find((entry) => entry.id === browserId && !entry.isRevoked);
+    if (!browser) {
+      return HttpResponse.json(
+        { error: { code: "not_found", message: "Chrome debug browser not found" } },
+        { status: 404 },
+      );
+    }
+    return HttpResponse.json({
+      token: "clb_chr_relay_mock",
+      browserId,
+      expiresAt: new Date(Date.now() + 300_000).toISOString(),
+      relayBaseUrl: `http://localhost/chrome-debug/relay/clb_chr_relay_mock`,
+      jsonVersionUrl: `http://localhost/chrome-debug/relay/clb_chr_relay_mock/json/version`,
+      jsonListUrl: `http://localhost/chrome-debug/relay/clb_chr_relay_mock/json/list`,
+    });
+  }),
+
+  http.get("/api/chrome-debug/extension.zip", () => {
+    return new HttpResponse(new Uint8Array([80, 75, 3, 4]), {
+      headers: {
+        "Content-Type": "application/zip",
+        "Content-Disposition": 'attachment; filename="codex-lb-chrome-debug-extension.zip"',
+      },
+    });
   }),
 
   http.get("/api/api-keys/", () => {

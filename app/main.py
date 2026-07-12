@@ -49,6 +49,7 @@ from app.modules.api_keys.reset_scheduler import build_api_key_limit_reset_sched
 from app.modules.audit import api as audit_api
 from app.modules.automations import api as automations_api
 from app.modules.automations.scheduler import build_automations_scheduler
+from app.modules.chrome_debug import api as chrome_debug_api
 from app.modules.codex_setup import api as codex_setup_api
 from app.modules.conversation_archive import api as conversation_archive_api
 from app.modules.dashboard import api as dashboard_api
@@ -417,6 +418,9 @@ def create_app() -> FastAPI:
     app.include_router(automations_api.router)
     app.include_router(api_keys_api.router)
     app.include_router(codex_setup_api.router)
+    app.include_router(chrome_debug_api.dashboard_router)
+    app.include_router(chrome_debug_api.client_router)
+    app.include_router(chrome_debug_api.relay_router)
     app.include_router(model_sources_api.router)
     app.include_router(health_api.router)
 

@@ -95,6 +95,13 @@ const EXPECTED_ENDPOINTS = [
 	"POST /api/model-sources/",
 	"PATCH /api/model-sources/:sourceId",
 	"DELETE /api/model-sources/:sourceId",
+	// chrome debug
+	"GET /api/chrome-debug/grants",
+	"PUT /api/chrome-debug/grants/:apiKeyId",
+	"GET /api/chrome-debug/browsers",
+	"DELETE /api/chrome-debug/browsers/:browserId",
+	"POST /api/chrome-debug/browsers/:browserId/relay-token",
+	"GET /api/chrome-debug/extension.zip",
 	// api-keys
 	"GET /api/api-keys/",
 	"POST /api/api-keys/",

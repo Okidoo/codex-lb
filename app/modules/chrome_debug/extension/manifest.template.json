@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "Codex LB Chrome Debug",
+  "description": "Expose this Chrome browser to authorized Codex LB API keys through a CDP bridge.",
+  "version": "0.1.0",
+  "minimum_chrome_version": "118",
+  "permissions": ["debugger", "storage", "tabs"],
+  "host_permissions": [],
+  "action": {
+    "default_title": "Codex LB Chrome Debug",
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "service_worker.js",
+    "type": "module"
+  }
+}
