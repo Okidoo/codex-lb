@@ -36,9 +36,11 @@ class _WebSocketServiceProtocol(Protocol):
     _run_zai_websocket_request: Any
     _raise_for_unsupported_input_image_references: Any
     _refresh_websocket_api_key_policy: Any
+    _revalidate_open_websocket_account: Any
     _relay_upstream_websocket_messages: Any
     _release_websocket_request_state_reservation: Any
     _release_websocket_reservation: Any
+    _release_request_state_account_response_create_lease: Any
     _remember_websocket_previous_response_owner: Any
     _remember_websocket_previous_response_owner_miss: Any
     _repo_factory: Any

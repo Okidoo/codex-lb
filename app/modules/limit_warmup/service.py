@@ -37,6 +37,12 @@ _MAX_CONCURRENT_WARMUP_SENDS = 4
 _ROLLING_WINDOW_SECONDS = 300 * 60
 _STAGGER_SLOT_GRACE_SECONDS = 60
 _IDLE_PRIMARY_WINDOW = "primary_idle"
+# Minimum reset_at forward jump (in seconds) to confirm a real quota window reset.
+# Upstream timestamp jitter of ~1 second must not trigger a warm-up.
+_RESET_CONFIRMED_MIN_JUMP_SECONDS = 60
+# Persist the upstream value, but treat nearby values as the same staggered-idle
+# cycle. This avoids every boundary inherent in stateless timestamp bucketing.
+_IDLE_RESET_AT_JITTER_TOLERANCE_SECONDS = 5
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +85,7 @@ class LimitWarmupAttemptsRepository(Protocol):
         model: str,
         attempted_at,
         status: str = "pending",
+        reset_at_tolerance_seconds: int = 0,
     ) -> AccountLimitWarmup | None: ...
 
     async def complete_attempt(
@@ -370,6 +377,7 @@ class LimitWarmupService:
                         after_primary=after_primary,
                         refresh_started_at=refresh_started_at,
                         usage_refresh_interval_seconds=usage_refresh_interval_seconds,
+                        idle_threshold_percent=settings.limit_warmup_idle_threshold_percent,
                     )
                 if candidate is None:
                     continue
@@ -382,6 +390,7 @@ class LimitWarmupService:
                         reset_at=candidate.reset_at,
                         model="auto",
                         attempted_at=utcnow(),
+                        reset_at_tolerance_seconds=_attempt_reset_at_tolerance(candidate),
                     )
                     if skipped is not None:
                         completed = await self._warmup_repo.complete_attempt(
@@ -400,6 +409,7 @@ class LimitWarmupService:
                     reset_at=candidate.reset_at,
                     model=model,
                     attempted_at=utcnow(),
+                    reset_at_tolerance_seconds=_attempt_reset_at_tolerance(candidate),
                 )
                 if attempt is None:
                     continue
@@ -677,7 +687,10 @@ def _build_candidate(
     available_percent = 100.0 - after.used_percent
     if min_available_percent < 100.0 and available_percent < min_available_percent:
         return None
-    if after.reset_at <= before.reset_at:
+    # Require a meaningful reset_at forward jump (not just upstream timestamp jitter).
+    # Upstream can report reset_at values that fluctuate by ~1 second between
+    # refresh cycles; only treat a jump of at least 60 seconds as a real reset.
+    if after.reset_at - before.reset_at < _RESET_CONFIRMED_MIN_JUMP_SECONDS:
         return None
     return _WarmupCandidate(reset_at=after.reset_at, window=window)
 
@@ -690,6 +703,7 @@ def _build_staggered_idle_candidate(
     after_primary: dict[str, UsageHistory],
     refresh_started_at: datetime | None,
     usage_refresh_interval_seconds: int,
+    idle_threshold_percent: float = 1.0,
 ) -> _WarmupCandidate | None:
     after = after_primary.get(account.id)
     if after is None:
@@ -698,7 +712,7 @@ def _build_staggered_idle_candidate(
         return None
     if usage_core.is_weekly_window_minutes(after.window_minutes):
         return None
-    if after.used_percent > 0.0:
+    if after.used_percent > idle_threshold_percent:
         return None
 
     due = _staggered_idle_due(
@@ -825,3 +839,9 @@ def _truncate(value: str | None, limit: int = 1000) -> str | None:
     if len(value) <= limit:
         return value
     return value[: limit - 1] + "..."
+
+
+def _attempt_reset_at_tolerance(candidate: _WarmupCandidate) -> int:
+    if candidate.window == _IDLE_PRIMARY_WINDOW:
+        return _IDLE_RESET_AT_JITTER_TOLERANCE_SECONDS
+    return 0

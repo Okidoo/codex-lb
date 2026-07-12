@@ -9,7 +9,8 @@ import pytest
 from sqlalchemy import text
 
 from app.core.auth import generate_unique_account_id
-from app.db.models import Account, AccountStatus
+from app.core.config.settings_cache import get_settings_cache
+from app.db.models import Account, AccountStatus, DashboardSettings
 from app.db.session import SessionLocal
 
 pytestmark = pytest.mark.integration
@@ -49,6 +50,10 @@ async def test_settings_api_get_and_update(async_client):
     payload = response.json()
     assert payload["stickyThreadsEnabled"] is True
     assert payload["upstreamStreamTransport"] == "default"
+    assert payload["prohibitFastMode"] is False
+    assert payload["proxyAccountResponseCreateLimit"] == 4
+    assert payload["proxyAccountStreamLimit"] == 8
+    assert payload["proxyAccountStreamRecoveryReserve"] == 1
     assert payload["upstreamProxyRoutingEnabled"] is False
     assert payload["upstreamProxyDefaultPoolId"] is None
     assert payload["preferEarlierResetAccounts"] is True
@@ -76,6 +81,7 @@ async def test_settings_api_get_and_update(async_client):
     assert payload["limitWarmupPrompt"] == "Say OK."
     assert payload["limitWarmupCooldownSeconds"] == 3600
     assert payload["limitWarmupExhaustedThresholdPercent"] == 99.0
+    assert payload["limitWarmupIdleThresholdPercent"] == 1.0
     assert payload["limitWarmupMinAvailablePercent"] == 100.0
     assert payload["weeklyPaceWorkingDays"] == "0,1,2,3,4,5,6"
     assert payload["weeklyPaceSmoothingMinutes"] == 30
@@ -86,6 +92,10 @@ async def test_settings_api_get_and_update(async_client):
         json={
             "stickyThreadsEnabled": False,
             "upstreamStreamTransport": "websocket",
+            "prohibitFastMode": True,
+            "proxyAccountResponseCreateLimit": 12,
+            "proxyAccountStreamLimit": 24,
+            "proxyAccountStreamRecoveryReserve": 3,
             "upstreamProxyRoutingEnabled": True,
             "upstreamProxyDefaultPoolId": None,
             "preferEarlierResetAccounts": False,
@@ -112,6 +122,7 @@ async def test_settings_api_get_and_update(async_client):
             "limitWarmupPrompt": "Say OK.",
             "limitWarmupCooldownSeconds": 7200,
             "limitWarmupExhaustedThresholdPercent": 98.5,
+            "limitWarmupIdleThresholdPercent": 2.0,
             "limitWarmupMinAvailablePercent": 99.0,
             "weeklyPaceWorkingDays": "0,1,2,3,4",
             "weeklyPaceSmoothingMinutes": 120,
@@ -122,6 +133,10 @@ async def test_settings_api_get_and_update(async_client):
     updated = response.json()
     assert updated["stickyThreadsEnabled"] is False
     assert updated["upstreamStreamTransport"] == "websocket"
+    assert updated["prohibitFastMode"] is True
+    assert updated["proxyAccountResponseCreateLimit"] == 12
+    assert updated["proxyAccountStreamLimit"] == 24
+    assert updated["proxyAccountStreamRecoveryReserve"] == 3
     assert updated["upstreamProxyRoutingEnabled"] is True
     assert updated["upstreamProxyDefaultPoolId"] is None
     assert updated["preferEarlierResetAccounts"] is False
@@ -149,6 +164,7 @@ async def test_settings_api_get_and_update(async_client):
     assert updated["limitWarmupPrompt"] == "Say OK."
     assert updated["limitWarmupCooldownSeconds"] == 7200
     assert updated["limitWarmupExhaustedThresholdPercent"] == 98.5
+    assert updated["limitWarmupIdleThresholdPercent"] == 2.0
     assert updated["limitWarmupMinAvailablePercent"] == 99.0
     assert updated["weeklyPaceWorkingDays"] == "0,1,2,3,4"
     assert updated["weeklyPaceSmoothingMinutes"] == 120
@@ -159,6 +175,10 @@ async def test_settings_api_get_and_update(async_client):
     payload = response.json()
     assert payload["stickyThreadsEnabled"] is False
     assert payload["upstreamStreamTransport"] == "websocket"
+    assert payload["prohibitFastMode"] is True
+    assert payload["proxyAccountResponseCreateLimit"] == 12
+    assert payload["proxyAccountStreamLimit"] == 24
+    assert payload["proxyAccountStreamRecoveryReserve"] == 3
     assert payload["upstreamProxyRoutingEnabled"] is True
     assert payload["upstreamProxyDefaultPoolId"] is None
     assert payload["preferEarlierResetAccounts"] is False
@@ -186,9 +206,46 @@ async def test_settings_api_get_and_update(async_client):
     assert payload["limitWarmupPrompt"] == "Say OK."
     assert payload["limitWarmupCooldownSeconds"] == 7200
     assert payload["limitWarmupExhaustedThresholdPercent"] == 98.5
+    assert payload["limitWarmupIdleThresholdPercent"] == 2.0
     assert payload["limitWarmupMinAvailablePercent"] == 99.0
     assert payload["weeklyPaceWorkingDays"] == "0,1,2,3,4"
     assert payload["weeklyPaceSmoothingMinutes"] == 120
+
+
+@pytest.mark.asyncio
+async def test_unrelated_settings_update_preserves_inherited_account_cap_nulls(async_client, monkeypatch):
+    response = await async_client.get("/api/settings")
+    assert response.status_code == 200
+
+    async with SessionLocal() as session:
+        settings = await session.get(DashboardSettings, 1)
+        assert settings is not None
+        settings.proxy_account_response_create_limit = None
+        settings.proxy_account_stream_limit = None
+        settings.proxy_account_stream_recovery_reserve = None
+        await session.commit()
+    await get_settings_cache().invalidate()
+
+    from app.modules.settings import service as settings_service
+
+    inherited = settings_service.get_settings().model_copy(
+        update={
+            "proxy_account_stream_limit": 1,
+            "proxy_account_stream_recovery_reserve": 2,
+        }
+    )
+    monkeypatch.setattr(settings_service, "get_settings", lambda: inherited)
+
+    response = await async_client.put("/api/settings", json={"warmupModel": "gpt-5.6-sol"})
+    assert response.status_code == 200
+    assert response.json()["warmupModel"] == "gpt-5.6-sol"
+
+    async with SessionLocal() as session:
+        settings = await session.get(DashboardSettings, 1)
+        assert settings is not None
+        assert settings.proxy_account_response_create_limit is None
+        assert settings.proxy_account_stream_limit is None
+        assert settings.proxy_account_stream_recovery_reserve is None
 
 
 @pytest.mark.asyncio
@@ -207,6 +264,32 @@ async def test_settings_api_accepts_fill_first_routing_strategy(async_client):
     response = await async_client.get("/api/settings")
     assert response.status_code == 200
     assert response.json()["routingStrategy"] == "fill_first"
+
+
+@pytest.mark.asyncio
+async def test_settings_api_rejects_stream_recovery_reserve_above_bounded_stream_cap(async_client):
+    response = await async_client.put(
+        "/api/settings",
+        json={
+            "proxyAccountStreamLimit": 2,
+            "proxyAccountStreamRecoveryReserve": 3,
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "invalid_proxy_account_stream_recovery_reserve"
+
+    unlimited = await async_client.put(
+        "/api/settings",
+        json={
+            "proxyAccountStreamLimit": 0,
+            "proxyAccountStreamRecoveryReserve": 3,
+        },
+    )
+
+    assert unlimited.status_code == 200
+    assert unlimited.json()["proxyAccountStreamLimit"] == 0
+    assert unlimited.json()["proxyAccountStreamRecoveryReserve"] == 3
 
 
 @pytest.mark.asyncio

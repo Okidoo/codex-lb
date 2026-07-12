@@ -1566,8 +1566,6 @@ async def test_usage_refresh_stores_free_monthly_window_without_secondary_remap(
 
 @pytest.mark.asyncio
 async def test_usage_refresh_uses_fresh_monthly_row_for_quota_freshness(monkeypatch) -> None:
-    from app.core.utils.time import utcnow
-
     monkeypatch.setenv("CODEX_LB_USAGE_REFRESH_ENABLED", "true")
     from app.core.config.settings import get_settings
 
@@ -1586,7 +1584,7 @@ async def test_usage_refresh_uses_fresh_monthly_row_for_quota_freshness(monkeypa
         account.id,
         100.0,
         window="monthly",
-        recorded_at=utcnow(),
+        recorded_at=usage_updater_module.utcnow(),
         reset_at=int(time.time()) + 3600,
         window_minutes=43_200,
     )
@@ -2432,7 +2430,7 @@ async def test_usage_updater_persists_primary_and_secondary_usage(monkeypatch) -
 
 
 @pytest.mark.asyncio
-async def test_usage_updater_does_not_sync_conflicting_plan_without_workspace_identity(monkeypatch) -> None:
+async def test_forced_usage_refresh_syncs_free_to_plus_upgrade_without_workspace(monkeypatch) -> None:
     monkeypatch.setenv("CODEX_LB_USAGE_REFRESH_ENABLED", "true")
     from app.core.config.settings import get_settings
 
@@ -2450,10 +2448,11 @@ async def test_usage_updater_does_not_sync_conflicting_plan_without_workspace_id
     accounts_repo.accounts_by_id[acc.id] = acc
     acc.plan_type = "free"
 
-    await updater.refresh_accounts([acc], latest_usage={})
+    usage_written = await updater.force_refresh(acc, ignore_refresh_disabled=True)
 
-    assert acc.plan_type == "free"
-    assert accounts_repo.token_updates == []
+    assert usage_written is False
+    assert acc.plan_type == "plus"
+    assert accounts_repo.token_updates[0]["plan_type"] == "plus"
     assert usage_repo.entries == []
 
 

@@ -23,7 +23,11 @@ class SettingsRepository:
             id=_SETTINGS_ID,
             sticky_threads_enabled=True,
             upstream_stream_transport="default",
+            prohibit_fast_mode=False,
             http_downstream_transport_policy=get_settings().http_downstream_transport_policy,
+            proxy_account_response_create_limit=get_settings().proxy_account_response_create_limit,
+            proxy_account_stream_limit=get_settings().proxy_account_stream_limit,
+            proxy_account_stream_recovery_reserve=get_settings().proxy_account_stream_recovery_reserve,
             upstream_proxy_routing_enabled=False,
             upstream_proxy_default_pool_id=None,
             prefer_earlier_reset_accounts=True,
@@ -55,6 +59,7 @@ class SettingsRepository:
             limit_warmup_prompt="Say OK.",
             limit_warmup_cooldown_seconds=3600,
             limit_warmup_exhausted_threshold_percent=99.0,
+            limit_warmup_idle_threshold_percent=1.0,
             limit_warmup_min_available_percent=100.0,
             weekly_pace_working_days="0,1,2,3,4,5,6",
             weekly_pace_smoothing_minutes=30,
@@ -77,7 +82,11 @@ class SettingsRepository:
         *,
         sticky_threads_enabled: bool | None = None,
         upstream_stream_transport: str | None = None,
+        prohibit_fast_mode: bool | None = None,
         http_downstream_transport_policy: str | None = None,
+        proxy_account_response_create_limit: int | None = None,
+        proxy_account_stream_limit: int | None = None,
+        proxy_account_stream_recovery_reserve: int | None = None,
         upstream_proxy_routing_enabled: bool | None = None,
         upstream_proxy_default_pool_id: str | None = None,
         prefer_earlier_reset_accounts: bool | None = None,
@@ -105,6 +114,7 @@ class SettingsRepository:
         limit_warmup_prompt: str | None = None,
         limit_warmup_cooldown_seconds: int | None = None,
         limit_warmup_exhausted_threshold_percent: float | None = None,
+        limit_warmup_idle_threshold_percent: float | None = None,
         limit_warmup_min_available_percent: float | None = None,
         weekly_pace_working_days: str | None = None,
         weekly_pace_smoothing_minutes: int | None = None,
@@ -116,8 +126,16 @@ class SettingsRepository:
             settings.sticky_threads_enabled = sticky_threads_enabled
         if upstream_stream_transport is not None:
             settings.upstream_stream_transport = upstream_stream_transport
+        if prohibit_fast_mode is not None:
+            settings.prohibit_fast_mode = prohibit_fast_mode
         if http_downstream_transport_policy is not None:
             settings.http_downstream_transport_policy = http_downstream_transport_policy
+        if proxy_account_response_create_limit is not None:
+            settings.proxy_account_response_create_limit = proxy_account_response_create_limit
+        if proxy_account_stream_limit is not None:
+            settings.proxy_account_stream_limit = proxy_account_stream_limit
+        if proxy_account_stream_recovery_reserve is not None:
+            settings.proxy_account_stream_recovery_reserve = proxy_account_stream_recovery_reserve
         if upstream_proxy_routing_enabled is not None:
             settings.upstream_proxy_routing_enabled = upstream_proxy_routing_enabled
         settings.upstream_proxy_default_pool_id = upstream_proxy_default_pool_id or None
@@ -175,6 +193,8 @@ class SettingsRepository:
             settings.limit_warmup_cooldown_seconds = limit_warmup_cooldown_seconds
         if limit_warmup_exhausted_threshold_percent is not None:
             settings.limit_warmup_exhausted_threshold_percent = limit_warmup_exhausted_threshold_percent
+        if limit_warmup_idle_threshold_percent is not None:
+            settings.limit_warmup_idle_threshold_percent = limit_warmup_idle_threshold_percent
         if limit_warmup_min_available_percent is not None:
             settings.limit_warmup_min_available_percent = limit_warmup_min_available_percent
         if weekly_pace_working_days is not None:

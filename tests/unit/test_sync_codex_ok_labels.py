@@ -135,6 +135,269 @@ def test_classify_check_state_ignores_stale_duplicate_that_finishes_late() -> No
     )
 
 
+def test_classify_check_state_ignores_unique_failure_from_superseded_ci_run() -> None:
+    module = load_sync_module()
+
+    check_runs = [
+        {
+            "name": "Tests (pytest, ${{ matrix.slice.name }})",
+            "status": "completed",
+            "conclusion": "failure",
+            "started_at": "2026-07-10T06:00:37Z",
+            "completed_at": "2026-07-10T06:00:37Z",
+            "details_url": "https://github.com/Soju06/codex-lb/actions/runs/100/job/1",
+            "_github_actions_workflow_id": "ci",
+        },
+        {
+            "name": "CI Required",
+            "status": "completed",
+            "conclusion": "failure",
+            "started_at": "2026-07-10T06:00:38Z",
+            "completed_at": "2026-07-10T06:00:41Z",
+            "details_url": "https://github.com/Soju06/codex-lb/actions/runs/100/job/2",
+            "_github_actions_workflow_id": "ci",
+        },
+        {
+            "name": "Tests (pytest, unit)",
+            "status": "completed",
+            "conclusion": "success",
+            "started_at": "2026-07-10T06:01:00Z",
+            "completed_at": "2026-07-10T06:05:00Z",
+            "details_url": "https://github.com/Soju06/codex-lb/actions/runs/200/job/3",
+            "_github_actions_workflow_id": "ci",
+        },
+        {
+            "name": "CI Required",
+            "status": "completed",
+            "conclusion": "success",
+            "started_at": "2026-07-10T06:09:01Z",
+            "completed_at": "2026-07-10T06:09:05Z",
+            "details_url": "https://github.com/Soju06/codex-lb/actions/runs/200/job/4",
+            "_github_actions_workflow_id": "ci",
+        },
+    ]
+
+    assert (
+        module.classify_check_state(
+            check_runs,
+            {"statuses": []},
+            required_check_names=frozenset({"CI Required", "Tests (pytest, unit)"}),
+        )
+        == "success"
+    )
+
+
+def test_classify_check_state_keeps_optional_failure_from_authoritative_ci_run() -> None:
+    module = load_sync_module()
+
+    check_runs = [
+        {
+            "name": "optional security scan",
+            "status": "completed",
+            "conclusion": "failure",
+            "started_at": "2026-07-10T06:09:00Z",
+            "completed_at": "2026-07-10T06:09:04Z",
+            "details_url": "https://github.com/Soju06/codex-lb/actions/runs/200/job/3",
+            "_github_actions_workflow_id": "ci",
+        },
+        {
+            "name": "CI Required",
+            "status": "completed",
+            "conclusion": "success",
+            "started_at": "2026-07-10T06:09:01Z",
+            "completed_at": "2026-07-10T06:09:05Z",
+            "details_url": "https://github.com/Soju06/codex-lb/actions/runs/200/job/4",
+            "_github_actions_workflow_id": "ci",
+        },
+    ]
+
+    assert (
+        module.classify_check_state(
+            check_runs,
+            {"statuses": []},
+            required_check_names=frozenset({"CI Required"}),
+        )
+        == "failure"
+    )
+
+
+def test_classify_check_state_keeps_newer_same_workflow_run_pending_before_required_job_exists() -> None:
+    module = load_sync_module()
+
+    check_runs = [
+        {
+            "name": "CI Required",
+            "status": "completed",
+            "conclusion": "success",
+            "started_at": "2026-07-10T06:09:01Z",
+            "completed_at": "2026-07-10T06:09:05Z",
+            "details_url": "https://github.com/Soju06/codex-lb/actions/runs/200/job/4",
+            "_github_actions_workflow_id": "ci",
+            "_github_actions_run_created_at": "2026-07-10T06:00:43Z",
+        },
+        {
+            "name": "Detect changes",
+            "status": "in_progress",
+            "conclusion": None,
+            "started_at": "2026-07-10T06:50:20Z",
+            "details_url": "https://github.com/Soju06/codex-lb/actions/runs/300/job/1",
+            "_github_actions_workflow_id": "ci",
+            "_github_actions_run_created_at": "2026-07-10T06:50:20Z",
+        },
+    ]
+
+    assert (
+        module.classify_check_state(
+            check_runs,
+            {"statuses": []},
+            required_check_names=frozenset({"CI Required"}),
+        )
+        == "pending"
+    )
+
+
+def test_classify_check_state_keeps_manual_rerun_of_older_run_pending() -> None:
+    module = load_sync_module()
+
+    check_runs = [
+        {
+            "name": "CI Required",
+            "status": "completed",
+            "conclusion": "success",
+            "started_at": "2026-07-10T06:50:20Z",
+            "completed_at": "2026-07-10T06:59:05Z",
+            "details_url": "https://github.com/Soju06/codex-lb/actions/runs/200/job/4",
+            "_github_actions_workflow_id": "ci",
+            "_github_actions_run_created_at": "2026-07-10T06:50:00Z",
+            "_github_actions_run_started_at": "2026-07-10T06:50:00Z",
+        },
+        {
+            "name": "Detect changes",
+            "status": "in_progress",
+            "conclusion": None,
+            "started_at": "2026-07-10T07:10:20Z",
+            "details_url": "https://github.com/Soju06/codex-lb/actions/runs/100/job/1",
+            "_github_actions_workflow_id": "ci",
+            "_github_actions_run_created_at": "2026-07-10T06:00:00Z",
+            "_github_actions_run_started_at": "2026-07-10T07:10:00Z",
+        },
+    ]
+
+    assert (
+        module.classify_check_state(
+            check_runs,
+            {"statuses": []},
+            required_check_names=frozenset({"CI Required"}),
+        )
+        == "pending"
+    )
+
+
+def test_classify_check_state_keeps_failure_from_manual_rerun_of_older_run() -> None:
+    module = load_sync_module()
+
+    check_runs = [
+        {
+            "name": "CI Required",
+            "status": "completed",
+            "conclusion": "success",
+            "started_at": "2026-07-10T06:50:20Z",
+            "completed_at": "2026-07-10T06:59:05Z",
+            "details_url": "https://github.com/Soju06/codex-lb/actions/runs/200/job/4",
+            "_github_actions_workflow_id": "ci",
+            "_github_actions_run_created_at": "2026-07-10T06:50:00Z",
+            "_github_actions_run_started_at": "2026-07-10T06:50:00Z",
+        },
+        {
+            "name": "CI Required",
+            "status": "completed",
+            "conclusion": "failure",
+            "started_at": "2026-07-10T07:10:20Z",
+            "completed_at": "2026-07-10T07:15:05Z",
+            "details_url": "https://github.com/Soju06/codex-lb/actions/runs/100/job/4",
+            "_github_actions_workflow_id": "ci",
+            "_github_actions_run_created_at": "2026-07-10T06:00:00Z",
+            "_github_actions_run_started_at": "2026-07-10T07:10:00Z",
+        },
+    ]
+
+    assert (
+        module.classify_check_state(
+            check_runs,
+            {"statuses": []},
+            required_check_names=frozenset({"CI Required"}),
+        )
+        == "failure"
+    )
+
+
+def test_classify_check_state_keeps_failure_from_independent_workflow_run() -> None:
+    module = load_sync_module()
+
+    check_runs = [
+        {
+            "name": "independent security scan",
+            "status": "completed",
+            "conclusion": "failure",
+            "started_at": "2026-07-10T06:08:00Z",
+            "completed_at": "2026-07-10T06:08:30Z",
+            "details_url": "https://github.com/Soju06/codex-lb/actions/runs/300/job/1",
+            "_github_actions_workflow_id": "security",
+        },
+        {
+            "name": "CI Required",
+            "status": "completed",
+            "conclusion": "success",
+            "started_at": "2026-07-10T06:09:01Z",
+            "completed_at": "2026-07-10T06:09:05Z",
+            "details_url": "https://github.com/Soju06/codex-lb/actions/runs/200/job/4",
+            "_github_actions_workflow_id": "ci",
+        },
+    ]
+
+    assert (
+        module.classify_check_state(
+            check_runs,
+            {"statuses": []},
+            required_check_names=frozenset({"CI Required"}),
+        )
+        == "failure"
+    )
+
+
+def test_annotate_github_actions_workflow_ids_is_conservative_when_metadata_lookup_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = load_sync_module()
+    check_runs = [
+        {
+            "name": "CI Required",
+            "details_url": "https://github.com/Soju06/codex-lb/actions/runs/200/job/4",
+        },
+        {
+            "name": "independent scan",
+            "details_url": "https://github.com/Soju06/codex-lb/actions/runs/300/job/1",
+        },
+    ]
+
+    def workflow_run(path: str) -> dict[str, int | str]:
+        if path.endswith("/200"):
+            return {
+                "workflow_id": 10,
+                "created_at": "2026-07-10T06:00:43Z",
+                "run_started_at": "2026-07-10T07:10:00Z",
+            }
+        raise module.GhError("metadata unavailable")
+
+    monkeypatch.setattr(module, "gh_api", workflow_run)
+
+    annotated = module.annotate_github_actions_workflow_ids("Soju06/codex-lb", check_runs)
+
+    assert annotated[0]["_github_actions_workflow_id"] == "10"
+    assert annotated[0]["_github_actions_run_started_at"] == "2026-07-10T07:10:00Z"
+    assert "_github_actions_workflow_id" not in annotated[1]
+
+
 def test_apply_decision_tolerates_github_app_write_denial(monkeypatch: pytest.MonkeyPatch) -> None:
     module = load_sync_module()
 

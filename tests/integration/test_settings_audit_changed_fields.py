@@ -39,6 +39,7 @@ def _default_put_body() -> dict[str, Any]:
     [
         ("stickyThreadsEnabled", False, "sticky_threads_enabled"),
         ("upstreamStreamTransport", "websocket", "upstream_stream_transport"),
+        ("prohibitFastMode", True, "prohibit_fast_mode"),
         ("preferEarlierResetAccounts", False, "prefer_earlier_reset_accounts"),
         ("routingStrategy", "round_robin", "routing_strategy"),
         (
@@ -68,6 +69,11 @@ def _default_put_body() -> dict[str, Any]:
             "limitWarmupExhaustedThresholdPercent",
             98.5,
             "limit_warmup_exhausted_threshold_percent",
+        ),
+        (
+            "limitWarmupIdleThresholdPercent",
+            2.0,
+            "limit_warmup_idle_threshold_percent",
         ),
         ("weeklyPaceWorkingDays", "0,1,2,3,4", "weekly_pace_working_days"),
         ("limitWarmupStaggeredIdleEnabled", True, "limit_warmup_staggered_idle_enabled"),

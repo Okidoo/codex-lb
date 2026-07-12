@@ -38,6 +38,7 @@ const OauthDialog = lazy(() =>
 export function AccountsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [accountSortMode, setAccountSortMode] = useState<AccountSortMode>(DEFAULT_ACCOUNT_SORT_MODE);
+  const [oauthAccountId, setOauthAccountId] = useState<string | null>(null);
   const {
     accountsQuery,
     importMutation,
@@ -167,9 +168,12 @@ export function AccountsPage() {
         >
           <div
             data-testid="accounts-list-panel"
-            className="min-w-0 min-h-0 h-full"
+            className="min-w-0 min-h-0 self-start"
           >
-            <div className="flex h-full min-h-0 min-w-0 flex-col rounded-xl border bg-card p-3 sm:p-4">
+            <div
+              data-testid="accounts-list-card"
+              className="flex min-h-0 min-w-0 flex-col rounded-xl border bg-card p-3 sm:p-4"
+            >
               <AccountList
                 accounts={accounts}
                 selectedAccountId={resolvedSelectedAccountId}
@@ -177,10 +181,13 @@ export function AccountsPage() {
                 sortMode={accountSortMode}
                 onSortModeChange={setAccountSortMode}
                 onOpenImport={() => importDialog.show()}
-                onOpenOauth={() => oauthDialog.show()}
-                onOpenZai={() => zaiDialog.show()}
-                readOnly={!canWrite}
-              />
+            onOpenOauth={() => {
+              setOauthAccountId(null);
+              oauthDialog.show();
+            }}
+            onOpenZai={() => zaiDialog.show()}
+            readOnly={!canWrite}
+          />
             </div>
           </div>
 
@@ -197,7 +204,10 @@ export function AccountsPage() {
               setAliasMutation.mutateAsync({ accountId, alias })
             }
             onDelete={(accountId) => deleteDialog.show(accountId)}
-            onReauth={() => oauthDialog.show()}
+            onReauth={() => {
+              setOauthAccountId(selectedAccount?.accountId ?? null);
+              oauthDialog.show();
+            }}
             onExportAuth={(accountId) => {
               void exportAuthMutation
                 .mutateAsync(accountId)
@@ -262,9 +272,14 @@ export function AccountsPage() {
         <OauthDialog
           open={oauthDialog.open}
           state={oauth.state}
-          onOpenChange={oauthDialog.onOpenChange}
+          onOpenChange={(open) => {
+            oauthDialog.onOpenChange(open);
+            if (!open) {
+              setOauthAccountId(null);
+            }
+          }}
           onStart={async (method) => {
-            await oauth.start(method);
+            await oauth.start(method, oauthAccountId ?? undefined);
           }}
           onComplete={async () => {
             await accountsQuery.refetch();

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
 from contextlib import asynccontextmanager
@@ -61,7 +62,12 @@ from app.core.errors import (
     openai_error,
     response_failed_event,
 )
-from app.core.exceptions import ProxyAuthError, ProxyRateLimitError, ProxyUpstreamError
+from app.core.exceptions import (
+    ProxyAuthError,
+    ProxyModelNotAllowed,
+    ProxyRateLimitError,
+    ProxyUpstreamError,
+)
 from app.core.metrics.prometheus import PROMETHEUS_AVAILABLE, bridge_public_contract_error_total
 from app.core.middleware.api_firewall import _parse_trusted_proxy_networks, resolve_connection_client_ip
 from app.core.openai.chat_requests import ChatCompletionsRequest
@@ -86,14 +92,19 @@ from app.core.openai.models import (
     OpenAIErrorEnvelope as OpenAIErrorEnvelopeModel,
 )
 from app.core.openai.parsing import parse_response_payload
-from app.core.openai.requests import ResponsesCompactRequest, ResponsesRequest, extract_input_file_ids
+from app.core.openai.requests import (
+    ResponsesCompactRequest,
+    ResponsesRequest,
+    extract_input_file_ids,
+    normalize_tool_type,
+)
 from app.core.openai.v1_requests import V1ResponsesCompactRequest, V1ResponsesRequest
 from app.core.request_locality import resolve_request_client_host
 from app.core.resilience.overload import is_local_overload_error_code, merge_retry_after_headers
 from app.core.runtime_logging import log_error_response
 from app.core.types import JsonValue
 from app.core.upstream_proxy import ResolvedUpstreamRoute, UpstreamProxyRouteError, resolve_upstream_route
-from app.core.utils.json_guards import is_json_mapping
+from app.core.utils.json_guards import is_json_list, is_json_mapping
 from app.core.utils.request_id import ensure_request_id, get_request_id
 from app.core.utils.sse import (
     CODEX_KEEPALIVE_FRAME,
@@ -125,6 +136,8 @@ from app.modules.firewall.service import FirewallRepositoryPort, FirewallService
 from app.modules.model_sources.catalog import (
     source_model_audio_cost_usd,
     source_model_cost_usd,
+    source_model_request_overrides,
+    source_model_supported_tool_types,
     source_model_supports_reasoning,
     source_models_to_upstream_models,
 )
@@ -150,15 +163,23 @@ from app.modules.model_sources.repository import ModelSourcesRepository
 from app.modules.proxy import affinity as proxy_affinity_module
 from app.modules.proxy import images_service as images_service_module
 from app.modules.proxy import service as proxy_service_module
+from app.modules.proxy._service.support import (
+    _bind_propagated_capacity_startup_ready,
+    _bind_propagated_capacity_startup_wait,
+    _reset_propagated_capacity_startup_ready,
+    _reset_propagated_capacity_startup_wait,
+)
 from app.modules.proxy.account_cache import get_account_selection_cache
 from app.modules.proxy.api_key_usage import estimate_api_key_request_usage
 from app.modules.proxy.helpers import _rate_limit_details
 from app.modules.proxy.http_bridge_forwarding import parse_forwarded_request
+from app.modules.proxy.images_observability import record_images_route_observability
 from app.modules.proxy.request_policy import (
     apply_api_key_enforcement,
     apply_api_key_enforcement_to_chat_payload,
     enforce_strict_function_tools_format,
     enforce_strict_text_format,
+    model_alias_requests_fast_mode,
     normalize_responses_request_payload,
     openai_client_payload_error,
     openai_validation_error,
@@ -204,6 +225,15 @@ from app.modules.usage.repository import AdditionalUsageRepository, UsageReposit
 from app.modules.usage.updater import UsageUpdater
 
 logger = logging.getLogger(__name__)
+
+_REASONING_SUMMARY_BLANK_HTML_COMMENT_RE = re.compile(r"(?m)^[ \t]*<!--\s*-->[ \t]*(?:\r?\n|\Z)")
+_REASONING_SUMMARY_DELTA_TYPES = frozenset({"response.reasoning_summary_text.delta"})
+_REASONING_SUMMARY_DONE_TYPES = frozenset(
+    {
+        "response.reasoning_summary_text.done",
+        "response.reasoning_summary_part.done",
+    }
+)
 
 _PUBLIC_RESPONSE_OUTPUT_ITEM_TYPES = frozenset(
     {
@@ -289,9 +319,11 @@ _UNAVAILABLE_SELECTION_ERROR_CODES = {
     "no_additional_quota_eligible_accounts",
 }
 _STREAM_STARTUP_ERROR_PROBE_SECONDS = 0.05
+_CAPACITY_WAIT_MARKER_GRACE_SECONDS = 0.05
 # Keep bridge startup probing above tiny event-loop scheduling jitter:
 # PostgreSQL-backed failures may need a DB round trip before the first item.
 _HTTP_BRIDGE_STARTUP_ERROR_PROBE_SECONDS = 2.0
+_CAPACITY_STARTUP_SIGNAL_DISCOVERY_SECONDS = _HTTP_BRIDGE_STARTUP_ERROR_PROBE_SECONDS
 _CHAT_COMPLETIONS_STARTUP_ERROR_PROBE_SECONDS = 2.0
 _CURSOR_CHAT_COMPLETIONS_STARTUP_ERROR_PROBE_SECONDS = 15.0
 _CURSOR_CONTEXT_LIMIT_SYNTHETIC_USAGE_TOKENS: Final[int] = 1_000_000
@@ -301,6 +333,25 @@ _V1_MAX_OUTPUT_TOKEN_OVERRIDES: Final[dict[str, int]] = {
     "gpt-5.4-mini": 128_000,
     "gpt-5.3-codex": 128_000,
 }
+
+
+class _CapacityStartupReadyEvent(asyncio.Event):
+    """Track when admission became ready so its startup probe cannot reset."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.set_at: float | None = None
+
+    def set(self) -> None:
+        if not self.is_set():
+            self.set_at = time.monotonic()
+        super().set()
+
+    def clear(self) -> None:
+        self.set_at = None
+        super().clear()
+
+
 _OPPORTUNISTIC_RETRY_AFTER_SECONDS = 60
 
 # OpenAI error ``type`` -> HTTP status for the /v1/images/* non-streaming
@@ -562,7 +613,9 @@ async def responses(
         return _logged_error_json_response(request, 400, error)
 
     raw_source_model = _effective_optional_model_for_api_key(api_key, responses_payload.model)
-    apply_api_key_enforcement(responses_payload, api_key)
+    prohibit_fast_mode = await _apply_api_key_enforcement_with_fast_mode_policy(responses_payload, api_key)
+    if prohibit_fast_mode and _is_fast_mode_model_alias(raw_source_model):
+        raw_source_model = responses_payload.model
     validate_model_access(api_key, responses_payload.model)
     try:
         compact_trigger_input = strip_terminal_compaction_trigger_input(responses_payload)
@@ -602,6 +655,7 @@ async def responses(
         codex_session_affinity=True,
         openai_cache_affinity=True,
         prefer_http_bridge=True,
+        prohibit_fast_mode=prohibit_fast_mode,
         # The Codex CLI consumes codex.* vendor events and the upstream's
         # native event ordering, while OpenAI SDK clients pointed at this
         # compatibility route need the same SSE contract enforcement as /v1.
@@ -631,10 +685,12 @@ async def responses_websocket(
     if denial is not None:
         await websocket.send_denial_response(denial)
         return
+    client_turn_state = proxy_affinity_module._sticky_key_from_turn_state_header(websocket.headers)
     turn_state = proxy_affinity_module.ensure_downstream_turn_state(websocket.headers)
     await websocket.accept(headers=proxy_affinity_module.build_downstream_turn_state_accept_headers(turn_state))
     forwarded_headers = dict(websocket.headers)
-    forwarded_headers.setdefault("x-codex-turn-state", turn_state)
+    if client_turn_state is None:
+        forwarded_headers["x-codex-turn-state"] = turn_state
     await context.service.proxy_responses_websocket(
         websocket,
         forwarded_headers,
@@ -642,6 +698,7 @@ async def responses_websocket(
         openai_cache_affinity=True,
         api_key=api_key,
         client_ip=resolve_request_client_host(websocket),
+        synthesized_turn_state=turn_state if client_turn_state is None else None,
     )
 
 
@@ -675,7 +732,9 @@ async def v1_responses(
         error = openai_validation_error(exc)
         return _logged_error_json_response(request, 400, error)
     raw_source_model = _effective_optional_model_for_api_key(api_key, responses_payload.model)
-    apply_api_key_enforcement(responses_payload, api_key)
+    prohibit_fast_mode = await _apply_api_key_enforcement_with_fast_mode_policy(responses_payload, api_key)
+    if prohibit_fast_mode and _is_fast_mode_model_alias(raw_source_model):
+        raw_source_model = responses_payload.model
     validate_model_access(api_key, responses_payload.model)
     # File-referencing Responses requests pin to the subscription account that
     # registered the upload; that account-scoped invariant applies to /v1
@@ -714,6 +773,7 @@ async def v1_responses(
             codex_session_affinity=False,
             openai_cache_affinity=True,
             prefer_http_bridge=True,
+            prohibit_fast_mode=prohibit_fast_mode,
         )
     return await _collect_responses(
         request,
@@ -723,6 +783,7 @@ async def v1_responses(
         codex_session_affinity=False,
         openai_cache_affinity=True,
         prefer_http_bridge=True,
+        prohibit_fast_mode=prohibit_fast_mode,
     )
 
 
@@ -755,8 +816,23 @@ async def internal_bridge_responses(
     api_key, auth_error = await _validate_internal_bridge_api_key(request)
     if auth_error is not None:
         return auth_error
+    if forwarded_request_context.context.signature_version is None:
+        try:
+            await context.service.validate_http_bridge_legacy_forward_anchor(
+                original_affinity_kind=forwarded_request_context.context.original_affinity_kind,
+                original_affinity_key=forwarded_request_context.context.original_affinity_key,
+                downstream_turn_state=forwarded_request_context.context.downstream_turn_state,
+                previous_response_id=payload.previous_response_id,
+                api_key=api_key,
+            )
+        except ProxyResponseError as exc:
+            return _logged_error_json_response(request, exc.status_code, exc.payload)
     skip_limit_enforcement = api_key is None or forwarded_request_context.context.reservation is not None
     forwarded_headers = _strip_internal_bridge_headers(request.headers)
+    if forwarded_request_context.context.original_request_unanchored:
+        forwarded_headers = {
+            key: value for key, value in forwarded_headers.items() if key.lower() != "x-codex-turn-state"
+        }
     return await _stream_responses(
         request,
         payload,
@@ -769,6 +845,8 @@ async def internal_bridge_responses(
         api_key_reservation_override=forwarded_request_context.context.reservation,
         include_rate_limit_headers=False,
         forwarded_request=True,
+        forwarded_original_request_unanchored=forwarded_request_context.context.original_request_unanchored,
+        forwarded_legacy_signature=forwarded_request_context.context.signature_version is None,
         forwarded_headers=forwarded_headers,
         forwarded_downstream_turn_state=forwarded_request_context.context.downstream_turn_state,
         forwarded_affinity_kind=forwarded_request_context.context.original_affinity_kind,
@@ -785,6 +863,7 @@ async def internal_bridge_responses(
         # before the origin ever sees the stream. Forward verbatim and let
         # the origin run its own normalization.
         enforce_openai_sdk_contract=False,
+        prohibit_fast_mode=await _prohibit_fast_mode_enabled(),
     )
 
 
@@ -797,10 +876,12 @@ async def v1_responses_websocket(
     if denial is not None:
         await websocket.send_denial_response(denial)
         return
+    client_turn_state = proxy_affinity_module._sticky_key_from_turn_state_header(websocket.headers)
     turn_state = proxy_affinity_module.ensure_downstream_turn_state(websocket.headers)
     await websocket.accept(headers=proxy_affinity_module.build_downstream_turn_state_accept_headers(turn_state))
     forwarded_headers = dict(websocket.headers)
-    forwarded_headers.setdefault("x-codex-turn-state", turn_state)
+    if client_turn_state is None:
+        forwarded_headers["x-codex-turn-state"] = turn_state
     await context.service.proxy_responses_websocket(
         websocket,
         forwarded_headers,
@@ -808,6 +889,7 @@ async def v1_responses_websocket(
         openai_cache_affinity=True,
         api_key=api_key,
         client_ip=resolve_request_client_host(websocket),
+        synthesized_turn_state=turn_state if client_turn_state is None else None,
     )
 
 
@@ -818,10 +900,20 @@ async def models(
     return await _build_codex_models_response(api_key)
 
 
-@v1_router.get("/models", response_model=ModelListResponse)
+@v1_router.get("/models", response_model=None)
 async def v1_models(
+    request: Request,
     api_key: ApiKeyData | None = Security(validate_proxy_api_key),
 ) -> Response:
+    # Codex clients pointed at this proxy via `openai_base_url` fetch their model
+    # catalog from `<base_url>/models` and always append a `client_version` query
+    # parameter. They require the Codex catalog shape (`{"models": [...]}`); the
+    # OpenAI-compatible list shape fails to parse client-side, and the client
+    # silently falls back to its bundled model metadata (stale tool_mode /
+    # use_responses_lite flags and context windows). Serve the Codex catalog to
+    # Codex clients and keep the OpenAI-compatible shape for everyone else.
+    if request.query_params.get("client_version"):
+        return await _build_codex_models_response(api_key)
     return await _build_models_response(api_key)
 
 
@@ -848,13 +940,16 @@ async def v1_usage(
     if usage is None:
         raise ProxyAuthError("Invalid API key")
 
+    own_limits = [_to_v1_usage_limit_response(limit) for limit in usage.limits]
+    upstream_limits = [] if hide_upstream_limits else _ordered_aggregate_limits(aggregate_limits)
+
     return V1UsageResponse(
         request_count=usage.request_count,
         total_tokens=usage.total_tokens,
         cached_input_tokens=usage.cached_input_tokens,
         total_cost_usd=usage.total_cost_usd,
-        limits=[_to_v1_usage_limit_response(limit) for limit in usage.limits],
-        upstream_limits=[] if hide_upstream_limits else _ordered_aggregate_limits(aggregate_limits),
+        limits=own_limits or upstream_limits,
+        upstream_limits=upstream_limits,
         account_pool_usage=account_pool_usage,
     )
 
@@ -1252,6 +1347,24 @@ async def _hide_upstream_quota_for_api_key_clients(api_key: ApiKeyData | None) -
     return bool(getattr(settings, "hide_upstream_quota_from_api_keys", False))
 
 
+async def _apply_api_key_enforcement_with_fast_mode_policy(
+    payload: ResponsesRequest | ResponsesCompactRequest,
+    api_key: ApiKeyData | None,
+) -> bool:
+    prohibit_fast_mode = await _prohibit_fast_mode_enabled()
+    apply_api_key_enforcement(payload, api_key, prohibit_fast_mode=prohibit_fast_mode)
+    return prohibit_fast_mode
+
+
+async def _prohibit_fast_mode_enabled() -> bool:
+    settings = await get_settings_cache().get()
+    return bool(getattr(settings, "prohibit_fast_mode", False))
+
+
+def _is_fast_mode_model_alias(model: str | None) -> bool:
+    return model_alias_requests_fast_mode(model)
+
+
 async def _rate_limit_headers_for_request(
     context: ProxyContext,
     api_key: ApiKeyData | None,
@@ -1545,6 +1658,7 @@ async def v1_audio_transcriptions(
     )
 
 
+@router.post("/images/generations", response_model=None, include_in_schema=False)
 @v1_router.post("/images/generations", response_model=None)
 async def v1_images_generations(
     request: Request,
@@ -1557,6 +1671,28 @@ async def v1_images_generations(
         payload=payload,
         context=context,
         api_key=api_key,
+    )
+
+
+def _coerce_image_form_stream_for_observability(stream: str | None) -> bool:
+    if stream is None:
+        return False
+    return stream.strip().lower() in {"1", "true", "t", "yes", "y", "on"}
+
+
+def _record_images_edit_early_rejection(
+    *,
+    model: str | None,
+    stream: bool,
+    started_at: float,
+) -> None:
+    record_images_route_observability(
+        route="edits",
+        model=model,
+        stream=stream,
+        status=400,
+        outcome="invalid_request",
+        started_at=started_at,
     )
 
 
@@ -1591,6 +1727,7 @@ async def v1_images_edits(
     context: ProxyContext = Depends(get_proxy_context),
     api_key: ApiKeyData | None = Security(validate_proxy_api_key),
 ) -> Response:
+    started_at = time.perf_counter()
     raw_form: dict[str, object] = {
         "model": model,
         "prompt": prompt,
@@ -1623,6 +1760,11 @@ async def v1_images_edits(
     try:
         form_payload = V1ImagesEditsForm.model_validate(raw_form)
     except ValidationError as exc:
+        _record_images_edit_early_rejection(
+            model=model,
+            stream=_coerce_image_form_stream_for_observability(stream),
+            started_at=started_at,
+        )
         return _logged_error_json_response(request, 400, openai_validation_error(exc))
 
     # Merge ``image`` and ``image[]`` into a single ordered list. Both
@@ -1634,6 +1776,11 @@ async def v1_images_edits(
     if image_brackets:
         merged_images.extend(image_brackets)
     if not merged_images:
+        _record_images_edit_early_rejection(
+            model=form_payload.model,
+            stream=bool(form_payload.stream),
+            started_at=started_at,
+        )
         return _logged_error_json_response(
             request,
             400,
@@ -1650,6 +1797,11 @@ async def v1_images_edits(
         finally:
             await upload.close()
         if not data:
+            _record_images_edit_early_rejection(
+                model=form_payload.model,
+                stream=bool(form_payload.stream),
+                started_at=started_at,
+            )
             return _logged_error_json_response(
                 request,
                 400,
@@ -1667,6 +1819,11 @@ async def v1_images_edits(
         finally:
             await mask.close()
         if not data:
+            _record_images_edit_early_rejection(
+                model=form_payload.model,
+                stream=bool(form_payload.stream),
+                started_at=started_at,
+            )
             return _logged_error_json_response(
                 request,
                 400,
@@ -1684,6 +1841,139 @@ async def v1_images_edits(
         mask=mask_payload,
         context=context,
         api_key=api_key,
+        started_at=started_at,
+    )
+
+
+@router.post("/images/edits", response_model=None, include_in_schema=False)
+async def codex_images_edits(
+    request: Request,
+    context: ProxyContext = Depends(get_proxy_context),
+    api_key: ApiKeyData | None = Security(validate_proxy_api_key),
+) -> Response:
+    """Accept Codex's JSON data-URL image-edit payload on its native base URL.
+
+    The built-in Codex image tool sends ``images: [{"image_url":
+    "data:<mime>;base64,..."}]`` rather than the multipart ``image`` parts
+    used by the public OpenAI Images API. Decode that transport shape here,
+    then delegate to the shared edit pipeline so validation and upstream
+    behavior remain identical.
+    """
+    started_at = time.perf_counter()
+    try:
+        raw_payload = await request.json()
+    except (JSONDecodeError, UnicodeDecodeError):
+        _record_images_edit_early_rejection(
+            model=None,
+            stream=False,
+            started_at=started_at,
+        )
+        return _logged_error_json_response(
+            request,
+            400,
+            images_service_module.make_invalid_request_error(
+                "Expected a JSON request body.",
+                param="prompt",
+            ),
+        )
+    if not is_json_mapping(raw_payload):
+        _record_images_edit_early_rejection(
+            model=None,
+            stream=False,
+            started_at=started_at,
+        )
+        return _logged_error_json_response(
+            request,
+            400,
+            images_service_module.make_invalid_request_error(
+                "Expected a JSON object request body.",
+                param="prompt",
+            ),
+        )
+
+    raw_model = raw_payload.get("model")
+    observability_model = raw_model if isinstance(raw_model, str) else None
+    raw_stream = raw_payload.get("stream", False)
+    observability_stream = raw_stream if isinstance(raw_stream, bool) else False
+    raw_form: dict[str, object] = {
+        "model": raw_model,
+        "prompt": raw_payload.get("prompt"),
+        "n": raw_payload.get("n", 1),
+        "size": raw_payload.get("size", "auto"),
+        "quality": raw_payload.get("quality", "auto"),
+        "background": raw_payload.get("background", "auto"),
+        "output_format": raw_payload.get("output_format", "png"),
+        "output_compression": raw_payload.get("output_compression", 100),
+        "moderation": raw_payload.get("moderation", "auto"),
+        "partial_images": raw_payload.get("partial_images"),
+        "stream": raw_payload.get("stream", False),
+        "input_fidelity": raw_payload.get("input_fidelity"),
+        "user": raw_payload.get("user"),
+    }
+    try:
+        form_payload = V1ImagesEditsForm.model_validate(raw_form)
+    except ValidationError as exc:
+        _record_images_edit_early_rejection(
+            model=observability_model,
+            stream=observability_stream,
+            started_at=started_at,
+        )
+        return _logged_error_json_response(request, 400, openai_validation_error(exc))
+
+    raw_images = raw_payload.get("images")
+    if not isinstance(raw_images, list) or not raw_images:
+        _record_images_edit_early_rejection(
+            model=form_payload.model,
+            stream=bool(form_payload.stream),
+            started_at=started_at,
+        )
+        return _logged_error_json_response(
+            request,
+            400,
+            images_service_module.make_invalid_request_error(
+                "At least one `images[].image_url` data URL is required.",
+                param="images",
+            ),
+        )
+
+    images: list[tuple[bytes, str | None]] = []
+    for index, raw_image in enumerate(raw_images):
+        if not is_json_mapping(raw_image) or not isinstance(image_url := raw_image.get("image_url"), str):
+            _record_images_edit_early_rejection(
+                model=form_payload.model,
+                stream=bool(form_payload.stream),
+                started_at=started_at,
+            )
+            return _logged_error_json_response(
+                request,
+                400,
+                images_service_module.make_invalid_request_error(
+                    f"images[{index}].image_url must be a base64 data URL.",
+                    param="images",
+                ),
+            )
+        try:
+            images.append(images_service_module.decode_data_url(image_url))
+        except ValueError as exc:
+            _record_images_edit_early_rejection(
+                model=form_payload.model,
+                stream=bool(form_payload.stream),
+                started_at=started_at,
+            )
+            return _logged_error_json_response(
+                request,
+                400,
+                images_service_module.make_invalid_request_error(str(exc), param="images"),
+            )
+
+    return await _proxy_images_edit_request(
+        request=request,
+        payload=form_payload,
+        images=images,
+        mask=None,
+        context=context,
+        api_key=api_key,
+        started_at=started_at,
     )
 
 
@@ -1756,6 +2046,9 @@ async def _proxy_images_generation_request(
     context: ProxyContext,
     api_key: ApiKeyData | None,
 ) -> Response:
+    started_at = time.perf_counter()
+    route: Literal["generations"] = "generations"
+    stream_requested = bool(payload.stream)
     # Apply the API key's enforced model BEFORE running the cross-field
     # validation matrix. Otherwise a request that passes validation
     # under the client-supplied ``model`` (e.g. gpt-image-2 with a 16-
@@ -1770,6 +2063,14 @@ async def _proxy_images_generation_request(
         requested_model or settings.images_default_model,
     )
     if not images_service_module.is_supported_image_model(effective_model):
+        record_images_route_observability(
+            route=route,
+            model=effective_model,
+            stream=stream_requested,
+            status=400,
+            outcome="invalid_request",
+            started_at=started_at,
+        )
         return _logged_error_json_response(
             request,
             400,
@@ -1789,6 +2090,14 @@ async def _proxy_images_generation_request(
     try:
         payload = images_service_module.validate_generations_payload(payload)
     except ClientPayloadError as exc:
+        record_images_route_observability(
+            route=route,
+            model=effective_model,
+            stream=stream_requested,
+            status=400,
+            outcome="invalid_request",
+            started_at=started_at,
+        )
         return _logged_error_json_response(request, 400, openai_client_payload_error(exc))
 
     public_model = payload.model
@@ -1797,21 +2106,47 @@ async def _proxy_images_generation_request(
 
     try:
         validate_model_access(api_key, effective_model)
-    except Exception:
-        # Re-raise so the global handler maps to 403.
+    except ProxyModelNotAllowed:
+        record_images_route_observability(
+            route=route,
+            model=public_model,
+            stream=stream_requested,
+            status=403,
+            outcome="model_not_allowed",
+            started_at=started_at,
+        )
         raise
 
     rate_limit_headers = await _rate_limit_headers_for_request(context, api_key)
-    reservation = await _enforce_request_limits(
-        api_key,
-        request_model=effective_model,
-        request_service_tier=None,
-    )
+    try:
+        reservation = await _enforce_request_limits(
+            api_key,
+            request_model=effective_model,
+            request_service_tier=None,
+        )
+    except ProxyRateLimitError:
+        record_images_route_observability(
+            route=route,
+            model=public_model,
+            stream=stream_requested,
+            status=429,
+            outcome="rate_limited",
+            started_at=started_at,
+        )
+        raise
 
     try:
         responses_payload = images_service_module.images_generation_to_responses_request(payload, host_model=host_model)
     except ValidationError as exc:
         await _release_reservation(reservation)
+        record_images_route_observability(
+            route=route,
+            model=public_model,
+            stream=stream_requested,
+            status=400,
+            outcome="invalid_request",
+            started_at=started_at,
+        )
         return _logged_error_json_response(
             request,
             400,
@@ -1861,6 +2196,14 @@ async def _proxy_images_generation_request(
         on_error=lambda: _release_reservation(reservation),
     )
     if prime_error is not None:
+        record_images_route_observability(
+            route=route,
+            model=public_model,
+            stream=stream_requested,
+            status=prime_error.status_code,
+            outcome="upstream_error",
+            started_at=started_at,
+        )
         return prime_error
     assert primed_upstream is not None
 
@@ -1873,6 +2216,9 @@ async def _proxy_images_generation_request(
             try:
                 async for chunk in translated:
                     yield chunk.encode("utf-8") if isinstance(chunk, str) else chunk
+            except ProxyResponseError:
+                captured["image_stream_outcome"] = "upstream_error"
+                raise
             finally:
                 # Run the request-log model rewrite even when the stream
                 # is cancelled mid-flight (e.g. client disconnect). Without
@@ -1897,6 +2243,17 @@ async def _proxy_images_generation_request(
                     output_tokens=_output if isinstance(_output, int) else None,
                     cached_input_tokens=_cached if isinstance(_cached, int) else None,
                 )
+                stream_outcome = captured.get("image_stream_outcome")
+                if not isinstance(stream_outcome, str):
+                    stream_outcome = "stream_closed"
+                record_images_route_observability(
+                    route=route,
+                    model=public_model,
+                    stream=True,
+                    status=200,
+                    outcome=stream_outcome,
+                    started_at=started_at,
+                )
 
         return StreamingResponse(
             _stream_with_log_rewrite(),
@@ -1911,6 +2268,14 @@ async def _proxy_images_generation_request(
         )
     except ProxyResponseError as exc:
         await _release_reservation(reservation)
+        record_images_route_observability(
+            route=route,
+            model=public_model,
+            stream=False,
+            status=exc.status_code,
+            outcome="upstream_error",
+            started_at=started_at,
+        )
         return _logged_error_json_response(
             request,
             exc.status_code,
@@ -1933,21 +2298,47 @@ async def _proxy_images_generation_request(
     )
 
     if error_envelope is not None:
+        error_status = _status_for_image_error_envelope(error_envelope)
+        record_images_route_observability(
+            route=route,
+            model=public_model,
+            stream=False,
+            status=error_status,
+            outcome="image_error",
+            started_at=started_at,
+        )
         return _logged_error_json_response(
             request,
-            _status_for_image_error_envelope(error_envelope),
+            error_status,
             error_envelope,
             headers=rate_limit_headers,
         )
     assert response_payload is not None
     images_result = images_service_module.images_response_from_responses(response_payload)
     if not isinstance(images_result, V1ImageResponse):
+        image_status = _status_for_image_error_envelope(images_result)
+        record_images_route_observability(
+            route=route,
+            model=public_model,
+            stream=False,
+            status=image_status,
+            outcome="image_error",
+            started_at=started_at,
+        )
         return _logged_error_json_response(
             request,
-            _status_for_image_error_envelope(images_result),
+            image_status,
             images_result,
             headers=rate_limit_headers,
         )
+    record_images_route_observability(
+        route=route,
+        model=public_model,
+        stream=False,
+        status=200,
+        outcome="success",
+        started_at=started_at,
+    )
     return JSONResponse(
         content=images_result.model_dump(mode="json", exclude_none=True),
         headers=rate_limit_headers,
@@ -1962,7 +2353,10 @@ async def _proxy_images_edit_request(
     mask: tuple[bytes, str | None] | None,
     context: ProxyContext,
     api_key: ApiKeyData | None,
+    started_at: float,
 ) -> Response:
+    route: Literal["edits"] = "edits"
+    stream_requested = bool(payload.stream)
     # Apply the API key's enforced model BEFORE validating the
     # cross-field matrix, so the matrix is checked against the model we
     # will actually send upstream. See the matching comment in
@@ -1974,6 +2368,14 @@ async def _proxy_images_edit_request(
         requested_model or settings.images_default_model,
     )
     if not images_service_module.is_supported_image_model(effective_model):
+        record_images_route_observability(
+            route=route,
+            model=effective_model,
+            stream=stream_requested,
+            status=400,
+            outcome="invalid_request",
+            started_at=started_at,
+        )
         return _logged_error_json_response(
             request,
             400,
@@ -1990,20 +2392,50 @@ async def _proxy_images_edit_request(
     try:
         payload = images_service_module.validate_edits_payload(payload)
     except ClientPayloadError as exc:
+        record_images_route_observability(
+            route=route,
+            model=effective_model,
+            stream=stream_requested,
+            status=400,
+            outcome="invalid_request",
+            started_at=started_at,
+        )
         return _logged_error_json_response(request, 400, openai_client_payload_error(exc))
 
     public_model = payload.model
     assert public_model is not None
     host_model = settings.images_host_model
 
-    validate_model_access(api_key, effective_model)
+    try:
+        validate_model_access(api_key, effective_model)
+    except ProxyModelNotAllowed:
+        record_images_route_observability(
+            route=route,
+            model=public_model,
+            stream=stream_requested,
+            status=403,
+            outcome="model_not_allowed",
+            started_at=started_at,
+        )
+        raise
 
     rate_limit_headers = await _rate_limit_headers_for_request(context, api_key)
-    reservation = await _enforce_request_limits(
-        api_key,
-        request_model=effective_model,
-        request_service_tier=None,
-    )
+    try:
+        reservation = await _enforce_request_limits(
+            api_key,
+            request_model=effective_model,
+            request_service_tier=None,
+        )
+    except ProxyRateLimitError:
+        record_images_route_observability(
+            route=route,
+            model=public_model,
+            stream=stream_requested,
+            status=429,
+            outcome="rate_limited",
+            started_at=started_at,
+        )
+        raise
 
     try:
         responses_payload = images_service_module.images_edit_to_responses_request(
@@ -2014,6 +2446,14 @@ async def _proxy_images_edit_request(
         )
     except (ValidationError, ValueError) as exc:
         await _release_reservation(reservation)
+        record_images_route_observability(
+            route=route,
+            model=public_model,
+            stream=stream_requested,
+            status=400,
+            outcome="invalid_request",
+            started_at=started_at,
+        )
         if isinstance(exc, ValidationError):
             return _logged_error_json_response(
                 request,
@@ -2051,6 +2491,14 @@ async def _proxy_images_edit_request(
         on_error=lambda: _release_reservation(reservation),
     )
     if prime_error is not None:
+        record_images_route_observability(
+            route=route,
+            model=public_model,
+            stream=stream_requested,
+            status=prime_error.status_code,
+            outcome="upstream_error",
+            started_at=started_at,
+        )
         return prime_error
     assert primed_upstream is not None
 
@@ -2063,6 +2511,9 @@ async def _proxy_images_edit_request(
             try:
                 async for chunk in translated:
                     yield chunk.encode("utf-8") if isinstance(chunk, str) else chunk
+            except ProxyResponseError:
+                captured["image_stream_outcome"] = "upstream_error"
+                raise
             finally:
                 # Run the request-log model rewrite even when the stream
                 # is cancelled mid-flight (e.g. client disconnect). Without
@@ -2087,6 +2538,17 @@ async def _proxy_images_edit_request(
                     output_tokens=_output if isinstance(_output, int) else None,
                     cached_input_tokens=_cached if isinstance(_cached, int) else None,
                 )
+                stream_outcome = captured.get("image_stream_outcome")
+                if not isinstance(stream_outcome, str):
+                    stream_outcome = "stream_closed"
+                record_images_route_observability(
+                    route=route,
+                    model=public_model,
+                    stream=True,
+                    status=200,
+                    outcome=stream_outcome,
+                    started_at=started_at,
+                )
 
         return StreamingResponse(
             _stream_with_log_rewrite(),
@@ -2101,6 +2563,14 @@ async def _proxy_images_edit_request(
         )
     except ProxyResponseError as exc:
         await _release_reservation(reservation)
+        record_images_route_observability(
+            route=route,
+            model=public_model,
+            stream=False,
+            status=exc.status_code,
+            outcome="upstream_error",
+            started_at=started_at,
+        )
         return _logged_error_json_response(
             request,
             exc.status_code,
@@ -2123,21 +2593,47 @@ async def _proxy_images_edit_request(
     )
 
     if error_envelope is not None:
+        error_status = _status_for_image_error_envelope(error_envelope)
+        record_images_route_observability(
+            route=route,
+            model=public_model,
+            stream=False,
+            status=error_status,
+            outcome="image_error",
+            started_at=started_at,
+        )
         return _logged_error_json_response(
             request,
-            _status_for_image_error_envelope(error_envelope),
+            error_status,
             error_envelope,
             headers=rate_limit_headers,
         )
     assert response_payload is not None
     images_result = images_service_module.images_response_from_responses(response_payload)
     if not isinstance(images_result, V1ImageResponse):
+        image_status = _status_for_image_error_envelope(images_result)
+        record_images_route_observability(
+            route=route,
+            model=public_model,
+            stream=False,
+            status=image_status,
+            outcome="image_error",
+            started_at=started_at,
+        )
         return _logged_error_json_response(
             request,
-            _status_for_image_error_envelope(images_result),
+            image_status,
             images_result,
             headers=rate_limit_headers,
         )
+    record_images_route_observability(
+        route=route,
+        model=public_model,
+        stream=False,
+        status=200,
+        outcome="success",
+        started_at=started_at,
+    )
     return JSONResponse(
         content=images_result.model_dump(mode="json", exclude_none=True),
         headers=rate_limit_headers,
@@ -2157,13 +2653,43 @@ async def _build_codex_models_response(api_key: ApiKeyData | None) -> Response:
 
     registry = get_model_registry()
     models = registry.get_models_with_fallback()
+    metadata_models = registry.get_models_for_metadata()
     source_models = [
         model
         for model in await _list_enabled_source_catalog_models(api_key, require_responses=True)
         if model.raw.get("supports_streaming") is True
     ]
+    visible_source_models = []
+    for source_model in source_models:
+        if visibility_allowed_models is None:
+            if exact_source_allowed_models is not None:
+                if source_model.slug not in exact_source_allowed_models:
+                    continue
+            elif not is_public_model(source_model, allowed_models):
+                continue
+        visible_source_models.append(source_model)
+    visible_source_models.sort(
+        key=lambda model: (
+            _effective_source_codex_visibility(
+                model,
+                visibility_allowed_models=visibility_allowed_models,
+                exact_source_allowed_models=exact_source_allowed_models,
+            )
+            != "list"
+        )
+    )
+    source_model_slugs = {
+        model.slug
+        for model in visible_source_models
+        if _effective_source_codex_visibility(
+            model,
+            visibility_allowed_models=visibility_allowed_models,
+            exact_source_allowed_models=exact_source_allowed_models,
+        )
+        == "list"
+    }
 
-    if not models and not source_models:
+    if not models and not metadata_models and not source_models:
         await _release_reservation(reservation)
         return JSONResponse(content=CodexModelsResponse(models=[], data=[]).model_dump(mode="json"))
 
@@ -2190,15 +2716,17 @@ async def _build_codex_models_response(api_key: ApiKeyData | None) -> Response:
         seen_slugs.add(slug)
         if model.supported_in_api and entry.visibility == "list":
             data.append(_to_model_list_item(slug, model, created=_model_list_created_at(model)))
-    for model in source_models:
+    for slug, model in metadata_models.items():
+        if slug in models or slug in source_model_slugs or not _is_codex_backend_catalog_model(model):
+            continue
+        if visibility_allowed_models is None and allowed_models is not None and slug not in allowed_models:
+            continue
+        entries.append(_to_codex_model_entry(model, visibility="hide"))
+        seen_slugs.add(slug)
+    for model in visible_source_models:
         if model.slug in seen_slugs:
             continue
         if visibility_allowed_models is None:
-            if exact_source_allowed_models is not None:
-                if model.slug not in exact_source_allowed_models:
-                    continue
-            elif not is_public_model(model, allowed_models):
-                continue
             entry = _to_codex_model_entry(model)
             entries.append(entry)
             seen_slugs.add(model.slug)
@@ -2207,8 +2735,10 @@ async def _build_codex_models_response(api_key: ApiKeyData | None) -> Response:
             continue
         entry = _to_codex_model_entry(
             model,
-            visibility=(
-                "list" if exact_source_allowed_models is None or model.slug in exact_source_allowed_models else "hide"
+            visibility=_effective_source_codex_visibility(
+                model,
+                visibility_allowed_models=visibility_allowed_models,
+                exact_source_allowed_models=exact_source_allowed_models,
             ),
         )
         entries.append(entry)
@@ -2475,6 +3005,24 @@ def _model_visibility(model: UpstreamModel) -> str:
     return visibility if isinstance(visibility, str) else "list"
 
 
+def _effective_source_codex_visibility(
+    model: UpstreamModel,
+    *,
+    visibility_allowed_models: set[str] | None,
+    exact_source_allowed_models: set[str] | None,
+) -> str:
+    raw_visibility = _model_visibility(model)
+    if raw_visibility != "list":
+        return raw_visibility
+    if (
+        visibility_allowed_models is not None
+        and exact_source_allowed_models is not None
+        and model.slug not in exact_source_allowed_models
+    ):
+        return "hide"
+    return "list"
+
+
 def _to_model_metadata(model: UpstreamModel) -> ModelMetadata:
     return ModelMetadata(
         display_name=model.display_name,
@@ -2542,7 +3090,6 @@ async def v1_chat_completions(
 ) -> Response:
     cursor_compat_client = _is_cursor_compat_client(request, api_key)
     effective_model = _effective_model_for_api_key(api_key, payload.model)
-    validate_model_access(api_key, effective_model)
 
     rate_limit_headers = await _rate_limit_headers_for_request(context, api_key)
     try:
@@ -2571,7 +3118,10 @@ async def v1_chat_completions(
     except ValidationError as exc:
         error = openai_validation_error(exc)
         return _logged_error_json_response(request, 400, error, headers=rate_limit_headers)
-    apply_api_key_enforcement(responses_payload, api_key)
+    prohibit_fast_mode = await _apply_api_key_enforcement_with_fast_mode_policy(responses_payload, api_key)
+    if prohibit_fast_mode and _is_fast_mode_model_alias(effective_model):
+        effective_model = responses_payload.model
+    validate_model_access(api_key, responses_payload.model)
     source_selection = (
         await _select_chat_model_source(
             responses_payload.model,
@@ -2626,7 +3176,20 @@ async def v1_chat_completions(
         if cursor_compat_client
         else _CHAT_COMPLETIONS_STARTUP_ERROR_PROBE_SECONDS
     )
-    stream, startup_error = await _probe_chat_stream_startup_error(stream, timeout_seconds=startup_probe_timeout)
+    capacity_wait_event = asyncio.Event()
+    capacity_ready_event = _CapacityStartupReadyEvent()
+    capacity_wait_token = _bind_propagated_capacity_startup_wait(capacity_wait_event)
+    capacity_ready_token = _bind_propagated_capacity_startup_ready(capacity_ready_event)
+    try:
+        stream, startup_error = await _probe_chat_stream_startup_error(
+            stream,
+            timeout_seconds=startup_probe_timeout,
+            capacity_wait_event=capacity_wait_event,
+            capacity_ready_event=capacity_ready_event,
+        )
+    finally:
+        _reset_propagated_capacity_startup_ready(capacity_ready_token)
+        _reset_propagated_capacity_startup_wait(capacity_wait_token)
     if startup_error is not None:
         if cursor_compat_client and _is_context_length_startup_error(startup_error):
             await _release_reservation(reservation)
@@ -2928,8 +3491,13 @@ async def _source_responses_response(
         request_service_tier=payload.service_tier,
         request_usage_budget=estimate_api_key_request_usage(payload),
     )
-    source_payload = payload.model_dump(mode="json", exclude_none=True)
+    source_payload = payload.model_dump_for_forwarding()
     source_payload["stream"] = bool(payload.stream)
+    _apply_source_response_request_overrides(source_payload, source_model_request_overrides(source, payload.model))
+    _drop_unsupported_source_response_tools(
+        source_payload,
+        supported_tool_types=source_model_supported_tool_types(source, payload.model),
+    )
 
     if payload.stream:
         try:
@@ -3040,6 +3608,181 @@ async def _source_responses_response(
         upstream_status_code=result.upstream_status_code,
     )
     return JSONResponse(content=result.payload, status_code=200, headers=rate_limit_headers)
+
+
+# Keys that source_request_overrides must never clobber: the routed model slug
+# is owned by source selection, and the stream flag drives SSE-vs-JSON response
+# handling on the proxy side.
+_SOURCE_RESPONSE_OVERRIDE_PROTECTED_KEYS = frozenset({"model", "stream"})
+
+
+def _apply_source_response_request_overrides(
+    payload: dict[str, JsonValue],
+    overrides: Mapping[str, JsonValue],
+) -> None:
+    for key, value in overrides.items():
+        if key in _SOURCE_RESPONSE_OVERRIDE_PROTECTED_KEYS:
+            continue
+        if key == "options" and isinstance(value, Mapping):
+            existing_options = payload.get("options")
+            merged_options = dict(existing_options) if isinstance(existing_options, Mapping) else {}
+            merged_options.update(value)
+            payload["options"] = merged_options
+            continue
+        payload[key] = value
+
+
+def _source_tool_type_supported(tool_type: JsonValue | None, supported_tool_types: frozenset[str]) -> bool:
+    if tool_type == "function":
+        return True
+    return isinstance(tool_type, str) and tool_type in supported_tool_types
+
+
+def _normalize_source_allowed_tool_choice_aliases(payload: dict[str, JsonValue]) -> None:
+    """Normalize legacy tool-type aliases nested under ``allowed_tools``.
+
+    Request validation normalizes the ``tools`` list and the top-level
+    ``tool_choice`` type (``web_search_preview`` -> ``web_search``) but leaves
+    entries nested under an ``allowed_tools`` choice untouched. Sources that
+    reject the legacy alias or validate the forced choice against the
+    (normalized) tools list would fail such requests, so source-bound payloads
+    always get the same alias normalization applied to the nested entries.
+    """
+    tool_choice = payload.get("tool_choice")
+    if not is_json_mapping(tool_choice):
+        return
+    if tool_choice.get("type") != "allowed_tools":
+        return
+    allowed = tool_choice.get("tools")
+    if not is_json_list(allowed):
+        return
+    normalized_allowed: list[JsonValue] = []
+    changed = False
+    for entry in allowed:
+        if is_json_mapping(entry):
+            entry_type = entry.get("type")
+            if isinstance(entry_type, str):
+                normalized_type = normalize_tool_type(entry_type)
+                if normalized_type != entry_type:
+                    entry = {**entry, "type": normalized_type}
+                    changed = True
+        normalized_allowed.append(entry)
+    if not changed:
+        return
+    updated_choice: dict[str, JsonValue] = dict(tool_choice)
+    updated_choice["tools"] = normalized_allowed
+    payload["tool_choice"] = updated_choice
+
+
+# Maps hosted tool types to the Responses ``include`` prefixes that only make
+# sense while that tool is present (see _RESPONSES_INCLUDE_ALLOWLIST in
+# app.core.openai.requests). When the source filter drops a hosted tool, the
+# matching include entries must be pruned with it: sources that validate
+# ``include`` would otherwise reject the request the filter just repaired.
+# Non-tool-specific entries (``reasoning.*``, ``message.*``) are never pruned.
+_SOURCE_TOOL_INCLUDE_PREFIXES: dict[str, tuple[str, ...]] = {
+    "web_search": ("web_search_call.",),
+    "file_search": ("file_search_call.",),
+    "code_interpreter": ("code_interpreter_call.",),
+    "computer_use": ("computer_call_output.",),
+    "computer_use_preview": ("computer_call_output.",),
+}
+
+
+def _prune_source_tool_specific_includes(payload: dict[str, JsonValue], dropped_tool_types: frozenset[str]) -> None:
+    prefixes = tuple(
+        prefix for tool_type in dropped_tool_types for prefix in _SOURCE_TOOL_INCLUDE_PREFIXES.get(tool_type, ())
+    )
+    if not prefixes:
+        return
+    include = payload.get("include")
+    if not is_json_list(include):
+        return
+    kept_include: list[JsonValue] = [
+        entry for entry in include if not (isinstance(entry, str) and entry.startswith(prefixes))
+    ]
+    if len(kept_include) == len(include):
+        return
+    if not kept_include:
+        payload.pop("include", None)
+        return
+    payload["include"] = kept_include
+
+
+def _drop_unsupported_source_response_tools(
+    payload: dict[str, JsonValue],
+    *,
+    supported_tool_types: frozenset[str],
+) -> None:
+    _normalize_source_allowed_tool_choice_aliases(payload)
+    tools = payload.get("tools")
+    if not is_json_list(tools):
+        return
+    kept_tools: list[JsonValue] = []
+    kept_types: set[str] = set()
+    dropped_types: set[str] = set()
+    for tool in tools:
+        if not is_json_mapping(tool):
+            continue
+        tool_type = tool.get("type")
+        if not _source_tool_type_supported(tool_type, supported_tool_types):
+            if isinstance(tool_type, str):
+                dropped_types.add(normalize_tool_type(tool_type))
+            continue
+        kept_tools.append(tool)
+        if isinstance(tool_type, str):
+            kept_types.add(tool_type)
+    if len(kept_tools) == len(tools):
+        return
+    _prune_source_tool_specific_includes(payload, frozenset(dropped_types))
+    if not kept_tools:
+        payload.pop("tools", None)
+        payload.pop("tool_choice", None)
+        payload.pop("parallel_tool_calls", None)
+        return
+    payload["tools"] = kept_tools
+    _drop_dangling_source_tool_choice(payload, frozenset(kept_types))
+
+
+def _drop_dangling_source_tool_choice(payload: dict[str, JsonValue], kept_types: frozenset[str]) -> None:
+    """Keep tool_choice consistent with the tools that survived filtering.
+
+    A forced tool_choice that references a dropped hosted tool (for example
+    ``{"type": "web_search"}``) would make the source reject the request, so it
+    falls back to the provider default by removing the key. ``function``-typed
+    choices always stay: function tools are never dropped by the filter.
+
+    Entries under ``allowed_tools`` carry the same tool-type alias
+    normalization as the ``tools`` list by the time this runs (see
+    ``_normalize_source_allowed_tool_choice_aliases``), so a legacy-alias
+    forced choice keeps matching the normalized tool it targets.
+    """
+    tool_choice = payload.get("tool_choice")
+    if not is_json_mapping(tool_choice):
+        return
+    choice_type = tool_choice.get("type")
+    if choice_type == "function":
+        return
+    if choice_type == "allowed_tools":
+        allowed = tool_choice.get("tools")
+        if not is_json_list(allowed):
+            return
+        kept_allowed: list[JsonValue] = [
+            entry
+            for entry in allowed
+            if is_json_mapping(entry) and _source_tool_type_supported(entry.get("type"), kept_types)
+        ]
+        if len(kept_allowed) == len(allowed):
+            return
+        if not kept_allowed:
+            payload.pop("tool_choice", None)
+            return
+        updated_choice: dict[str, JsonValue] = dict(tool_choice)
+        updated_choice["tools"] = kept_allowed
+        payload["tool_choice"] = updated_choice
+        return
+    if not _source_tool_type_supported(choice_type, kept_types):
+        payload.pop("tool_choice", None)
 
 
 async def _source_chat_completion_response(
@@ -3390,25 +4133,55 @@ async def _stream_responses(
     api_key_reservation_override: ApiKeyUsageReservationData | None = None,
     include_rate_limit_headers: bool = True,
     forwarded_request: bool = False,
+    forwarded_original_request_unanchored: bool = False,
+    forwarded_legacy_signature: bool = False,
     forwarded_headers: Mapping[str, str] | None = None,
     forwarded_downstream_turn_state: str | None = None,
     forwarded_affinity_kind: str | None = None,
     forwarded_affinity_key: str | None = None,
     forwarded_client_ip: str | None = None,
     enforce_openai_sdk_contract: bool = True,
+    prohibit_fast_mode: bool = False,
 ) -> Response:
-    apply_api_key_enforcement(payload, api_key)
+    apply_api_key_enforcement(payload, api_key, prohibit_fast_mode=prohibit_fast_mode)
     validate_model_access(api_key, payload.model)
-    admission_denial = await _opportunistic_admission_denial(request, context, api_key, model=payload.model)
-    if admission_denial is not None:
-        return admission_denial
-    compact_trigger_input: list[JsonValue] | None = None
+    compact_payload: ResponsesCompactRequest | None = None
     if codex_session_affinity:
         try:
             compact_trigger_input = strip_terminal_compaction_trigger_input(payload)
+            if compact_trigger_input is not None:
+                compact_payload_data = payload.model_dump(
+                    mode="json",
+                    include={
+                        "model",
+                        "instructions",
+                        "reasoning",
+                        "store",
+                        "service_tier",
+                        "prompt_cache_key",
+                    },
+                    exclude_none=True,
+                )
+                if isinstance(payload.model_extra, dict):
+                    prompt_cache_key_alias = payload.model_extra.get("promptCacheKey")
+                    if isinstance(prompt_cache_key_alias, str) and "prompt_cache_key" not in compact_payload_data:
+                        compact_payload_data["prompt_cache_key"] = prompt_cache_key_alias
+                compact_payload_data["input"] = compact_trigger_input
+                if payload.previous_response_id is not None:
+                    compact_payload_data["previous_response_id"] = payload.previous_response_id
+                if payload.conversation is not None:
+                    compact_payload_data["conversation"] = payload.conversation
+                compact_payload = ResponsesCompactRequest.model_validate(compact_payload_data)
+                # Validate the exact compact wire payload before admission or
+                # reservation work so an untrimmable trigger is a client 400,
+                # not a late service exception that reaches the global 500.
+                compact_payload.to_payload()
         except ClientPayloadError as exc:
             error = openai_client_payload_error(exc)
             return _logged_error_json_response(request, 400, error)
+    admission_denial = await _opportunistic_admission_denial(request, context, api_key, model=payload.model)
+    if admission_denial is not None:
+        return admission_denial
     owns_reservation = api_key_reservation_override is None
     reservation = (
         api_key_reservation_override
@@ -3437,29 +4210,7 @@ async def _stream_responses(
         if downstream_turn_state is not None
         else {}
     )
-    if compact_trigger_input is not None:
-        compact_payload_data = payload.model_dump(
-            mode="json",
-            include={
-                "model",
-                "instructions",
-                "reasoning",
-                "store",
-                "service_tier",
-                "prompt_cache_key",
-            },
-            exclude_none=True,
-        )
-        if isinstance(payload.model_extra, dict):
-            prompt_cache_key_alias = payload.model_extra.get("promptCacheKey")
-            if isinstance(prompt_cache_key_alias, str) and "prompt_cache_key" not in compact_payload_data:
-                compact_payload_data["prompt_cache_key"] = prompt_cache_key_alias
-        compact_payload_data["input"] = compact_trigger_input
-        if payload.previous_response_id is not None:
-            compact_payload_data["previous_response_id"] = payload.previous_response_id
-        if payload.conversation is not None:
-            compact_payload_data["conversation"] = payload.conversation
-        compact_payload = ResponsesCompactRequest.model_validate(compact_payload_data)
+    if compact_payload is not None:
         try:
             try:
                 compact_result = await context.service.compact_responses(
@@ -3531,6 +4282,8 @@ async def _stream_responses(
             suppress_text_done_events=suppress_text_done_events,
             downstream_turn_state=downstream_turn_state,
             forwarded_request=forwarded_request,
+            forwarded_original_request_unanchored=forwarded_original_request_unanchored,
+            forwarded_legacy_signature=forwarded_legacy_signature,
             forwarded_affinity_kind=forwarded_affinity_kind,
             forwarded_affinity_key=forwarded_affinity_key,
             client_ip=client_ip,
@@ -3549,13 +4302,23 @@ async def _stream_responses(
             client_ip=client_ip,
             enforce_openai_sdk_contract=enforce_openai_sdk_contract,
         )
-    stream, startup_error = await _probe_stream_startup_error(
-        stream,
-        convert_event_errors=bridge_active and enforce_openai_sdk_contract,
-        timeout_seconds=(
-            _HTTP_BRIDGE_STARTUP_ERROR_PROBE_SECONDS if prefer_http_bridge else _STREAM_STARTUP_ERROR_PROBE_SECONDS
-        ),
-    )
+    capacity_wait_event = asyncio.Event()
+    capacity_ready_event = _CapacityStartupReadyEvent()
+    capacity_wait_token = _bind_propagated_capacity_startup_wait(capacity_wait_event)
+    capacity_ready_token = _bind_propagated_capacity_startup_ready(capacity_ready_event)
+    try:
+        stream, startup_error = await _probe_stream_startup_error(
+            stream,
+            convert_event_errors=bridge_active and enforce_openai_sdk_contract,
+            timeout_seconds=(
+                _HTTP_BRIDGE_STARTUP_ERROR_PROBE_SECONDS if prefer_http_bridge else _STREAM_STARTUP_ERROR_PROBE_SECONDS
+            ),
+            capacity_wait_event=capacity_wait_event,
+            capacity_ready_event=capacity_ready_event,
+        )
+    finally:
+        _reset_propagated_capacity_startup_ready(capacity_ready_token)
+        _reset_propagated_capacity_startup_wait(capacity_wait_token)
     if startup_error is not None:
         if owns_reservation:
             await _release_reservation(reservation)
@@ -3610,8 +4373,9 @@ async def _collect_responses(
     openai_cache_affinity: bool = False,
     suppress_text_done_events: bool = False,
     prefer_http_bridge: bool = False,
+    prohibit_fast_mode: bool = False,
 ) -> Response:
-    apply_api_key_enforcement(payload, api_key)
+    apply_api_key_enforcement(payload, api_key, prohibit_fast_mode=prohibit_fast_mode)
     validate_model_access(api_key, payload.model)
     admission_denial = await _opportunistic_admission_denial(request, context, api_key, model=payload.model)
     if admission_denial is not None:
@@ -3660,8 +4424,12 @@ async def _collect_responses(
             suppress_text_done_events=suppress_text_done_events,
             client_ip=client_ip,
         )
+    captured_turn_state_headers: dict[str, str] = {}
     try:
-        response_payload = await _collect_responses_payload(stream)
+        response_payload = await _collect_responses_payload(
+            stream,
+            captured_turn_state_headers=captured_turn_state_headers,
+        )
     except ProxyResponseError as exc:
         await _release_reservation(reservation)
         error = _parse_error_envelope(exc.payload)
@@ -3670,7 +4438,7 @@ async def _collect_responses(
             request,
             status_code,
             error.model_dump(mode="json", exclude_none=True),
-            headers=rate_limit_headers,
+            headers={**captured_turn_state_headers, **rate_limit_headers},
         )
     if isinstance(response_payload, OpenAIResponsePayload):
         if response_payload.status == "failed":
@@ -3680,18 +4448,18 @@ async def _collect_responses(
                 request,
                 status_code,
                 error_payload.model_dump(mode="json", exclude_none=True),
-                headers={**turn_state_headers, **rate_limit_headers},
+                headers={**turn_state_headers, **captured_turn_state_headers, **rate_limit_headers},
             )
         return JSONResponse(
             content=response_payload.model_dump(mode="json", exclude_none=True),
-            headers={**turn_state_headers, **rate_limit_headers},
+            headers={**turn_state_headers, **captured_turn_state_headers, **rate_limit_headers},
         )
     status_code, response_payload = _mask_previous_response_not_found_error(response_payload)
     return _logged_error_json_response(
         request,
         status_code,
         response_payload.model_dump(mode="json", exclude_none=True),
-        headers={**turn_state_headers, **rate_limit_headers},
+        headers={**turn_state_headers, **captured_turn_state_headers, **rate_limit_headers},
     )
 
 
@@ -3703,7 +4471,13 @@ async def responses_compact(
     api_key: ApiKeyData | None = Security(validate_proxy_api_key),
 ) -> JSONResponse:
     return await _compact_responses(
-        request, payload, context, api_key, codex_session_affinity=True, openai_cache_affinity=True
+        request,
+        payload,
+        context,
+        api_key,
+        codex_session_affinity=True,
+        openai_cache_affinity=True,
+        prohibit_fast_mode=await _prohibit_fast_mode_enabled(),
     )
 
 
@@ -3729,6 +4503,7 @@ async def v1_responses_compact(
         api_key,
         codex_session_affinity=False,
         openai_cache_affinity=True,
+        prohibit_fast_mode=await _prohibit_fast_mode_enabled(),
     )
 
 
@@ -3739,9 +4514,15 @@ async def _compact_responses(
     api_key: ApiKeyData | None,
     codex_session_affinity: bool = False,
     openai_cache_affinity: bool = False,
+    prohibit_fast_mode: bool = False,
 ) -> JSONResponse:
-    apply_api_key_enforcement(payload, api_key)
+    apply_api_key_enforcement(payload, api_key, prohibit_fast_mode=prohibit_fast_mode)
     validate_model_access(api_key, payload.model)
+    try:
+        request_usage_budget = estimate_api_key_request_usage(payload)
+    except ClientPayloadError as exc:
+        error = openai_client_payload_error(exc)
+        return _logged_error_json_response(request, 400, error)
     admission_denial = await _opportunistic_admission_denial(
         request,
         context,
@@ -3755,7 +4536,7 @@ async def _compact_responses(
         api_key,
         request_model=payload.model,
         request_service_tier=_compact_request_service_tier(payload),
-        request_usage_budget=estimate_api_key_request_usage(payload),
+        request_usage_budget=request_usage_budget,
     )
 
     rate_limit_headers = await _rate_limit_headers_for_request(context, api_key)
@@ -4084,17 +4865,135 @@ def _create_first_stream_probe_task(stream: AsyncIterator[str]) -> asyncio.Task[
     return task
 
 
+async def _wait_for_first_stream_probe(
+    first_task: asyncio.Task[str],
+    *,
+    timeout_seconds: float,
+    capacity_wait_event: asyncio.Event | None,
+    capacity_ready_event: asyncio.Event | None = None,
+) -> bool:
+    try:
+        done, _pending = await asyncio.wait({first_task}, timeout=timeout_seconds)
+        if done:
+            if capacity_wait_event is not None and capacity_wait_event.is_set():
+                capacity_wait_event.clear()
+            return True
+        if capacity_wait_event is None:
+            return False
+
+        # Account selection can include a PostgreSQL round trip before it can
+        # report either successful admission or local capacity pressure. Give
+        # those paired signals the established bounded startup-probe window,
+        # but keep one absolute deadline so unrelated/no-marker streams cannot
+        # turn the route into a request-budget-length startup wait.
+        signal_discovery_seconds = (
+            _CAPACITY_STARTUP_SIGNAL_DISCOVERY_SECONDS
+            if capacity_ready_event is not None
+            else _CAPACITY_WAIT_MARKER_GRACE_SECONDS
+        )
+        signal_discovery_deadline = asyncio.get_running_loop().time() + signal_discovery_seconds
+        while True:
+            if first_task.done():
+                if capacity_wait_event.is_set():
+                    capacity_wait_event.clear()
+                return True
+            if capacity_wait_event.is_set():
+                recovery_ready_task = (
+                    asyncio.create_task(capacity_ready_event.wait()) if capacity_ready_event is not None else None
+                )
+                try:
+                    recovery_waiters = {first_task}
+                    if recovery_ready_task is not None:
+                        recovery_waiters.add(recovery_ready_task)
+                    recovery_done, _pending = await asyncio.wait(
+                        recovery_waiters,
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if first_task not in recovery_done:
+                        # Re-read the paired level state. The ready signal has
+                        # cleared the wait that recovered, but a newer wait may
+                        # already have superseded that ready before this task
+                        # resumes.
+                        continue
+                finally:
+                    if recovery_ready_task is not None and not recovery_ready_task.done():
+                        recovery_ready_task.cancel()
+                    if recovery_ready_task is not None:
+                        await asyncio.gather(recovery_ready_task, return_exceptions=True)
+                continue
+            if capacity_ready_event is not None and capacity_ready_event.is_set():
+                # Admission recovery only proves that local capacity is ready;
+                # the resumed upstream can still fail before its first item.
+                # Preserve the route's normal bounded startup-error window so
+                # an immediate 4xx / response.failed remains an HTTP startup
+                # error, while a slow healthy upstream is still handed off.
+                post_ready_timeout = timeout_seconds
+                if isinstance(capacity_ready_event, _CapacityStartupReadyEvent):
+                    ready_set_at = capacity_ready_event.set_at
+                    if ready_set_at is not None:
+                        post_ready_timeout = max(0.0, timeout_seconds - (time.monotonic() - ready_set_at))
+                if post_ready_timeout <= 0:
+                    return False
+                post_ready_done, _pending = await asyncio.wait(
+                    {first_task},
+                    timeout=post_ready_timeout,
+                )
+                return bool(post_ready_done)
+
+            marker_task = asyncio.create_task(capacity_wait_event.wait())
+            ready_task = asyncio.create_task(capacity_ready_event.wait()) if capacity_ready_event is not None else None
+            try:
+                signal_discovery_remaining = max(
+                    0.0,
+                    signal_discovery_deadline - asyncio.get_running_loop().time(),
+                )
+                if signal_discovery_remaining <= 0:
+                    return False
+                signal_waiters = {first_task, marker_task}
+                if ready_task is not None:
+                    signal_waiters.add(ready_task)
+                signal_done, _pending = await asyncio.wait(
+                    signal_waiters,
+                    timeout=signal_discovery_remaining,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if not signal_done:
+                    return False
+            finally:
+                pending_signal_tasks = [
+                    task for task in (marker_task, ready_task) if task is not None and not task.done()
+                ]
+                for task in pending_signal_tasks:
+                    task.cancel()
+                await asyncio.gather(
+                    marker_task,
+                    *(task for task in (ready_task,) if task is not None),
+                    return_exceptions=True,
+                )
+    except asyncio.CancelledError:
+        first_task.cancel()
+        await asyncio.gather(first_task, return_exceptions=True)
+        raise
+
+
 async def _probe_stream_startup_error(
     stream: AsyncIterator[str],
     *,
     convert_event_errors: bool = False,
     timeout_seconds: float | None = None,
+    capacity_wait_event: asyncio.Event | None = None,
+    capacity_ready_event: asyncio.Event | None = None,
 ) -> tuple[AsyncIterator[str], ProxyResponseError | OpenAIErrorEnvelopeModel | None]:
     if timeout_seconds is None:
         timeout_seconds = _STREAM_STARTUP_ERROR_PROBE_SECONDS
     first_task = _create_first_stream_probe_task(stream)
-    done, _pending = await asyncio.wait({first_task}, timeout=timeout_seconds)
-    if not done:
+    probe_done = await _wait_for_first_stream_probe(
+        first_task,
+        timeout_seconds=timeout_seconds,
+        capacity_wait_event=capacity_wait_event,
+        capacity_ready_event=capacity_ready_event,
+    )
+    if not probe_done:
         # Probe window elapsed before the first item arrived. Hand the still-
         # running task off to be consumed by the streamed response. asyncio.wait
         # (rather than wait_for + shield) never cancels the task on timeout,
@@ -4404,12 +5303,19 @@ async def _probe_chat_stream_startup_error(
     *,
     timeout_seconds: float = _CHAT_COMPLETIONS_STARTUP_ERROR_PROBE_SECONDS,
     max_startup_events: int = 8,
+    capacity_wait_event: asyncio.Event | None = None,
+    capacity_ready_event: asyncio.Event | None = None,
 ) -> tuple[AsyncIterator[str], ProxyResponseError | OpenAIErrorEnvelopeModel | None]:
     buffered: list[str] = []
     for _ in range(max_startup_events):
         first_task = _create_first_stream_probe_task(stream)
-        done, _pending = await asyncio.wait({first_task}, timeout=timeout_seconds)
-        if not done:
+        probe_done = await _wait_for_first_stream_probe(
+            first_task,
+            timeout_seconds=timeout_seconds,
+            capacity_wait_event=capacity_wait_event,
+            capacity_ready_event=capacity_ready_event,
+        )
+        if not probe_done:
             return _prepend_items(buffered, _prepend_first_task(first_task, stream)), None
         try:
             first = first_task.result()
@@ -4962,7 +5868,30 @@ def _compact_request_service_tier(payload: ResponsesCompactRequest) -> str | Non
     return stripped or None
 
 
-async def _collect_responses_payload(stream: AsyncIterator[str]) -> OpenAIResponseResult:
+def _capture_response_metadata_turn_state(
+    payload: Mapping[str, JsonValue],
+    captured_turn_state_headers: dict[str, str],
+) -> None:
+    """Keep the first real upstream turn-state metadata header for the HTTP response."""
+    if captured_turn_state_headers or payload.get("type") != "response.metadata":
+        return
+    headers = payload.get("headers")
+    if not is_json_mapping(headers):
+        return
+    for name, value in headers.items():
+        if str(name).lower() != "x-codex-turn-state" or not isinstance(value, str):
+            continue
+        turn_state = value.strip()
+        if turn_state:
+            captured_turn_state_headers["x-codex-turn-state"] = turn_state
+        return
+
+
+async def _collect_responses_payload(
+    stream: AsyncIterator[str],
+    *,
+    captured_turn_state_headers: dict[str, str] | None = None,
+) -> OpenAIResponseResult:
     output_items: dict[int, dict[str, JsonValue]] = {}
     terminal_result: OpenAIResponseResult | None = None
     contract_violation_kind: str | None = None
@@ -4972,6 +5901,8 @@ async def _collect_responses_payload(stream: AsyncIterator[str]) -> OpenAIRespon
             if _looks_like_sse_data_block(line):
                 contract_violation_kind = contract_violation_kind or "invalid_json"
             continue
+        if captured_turn_state_headers is not None:
+            _capture_response_metadata_turn_state(payload, captured_turn_state_headers)
         event_type = payload.get("type")
         _collect_output_item_event(payload, output_items)
         if terminal_result is not None:
@@ -5059,6 +5990,7 @@ async def _normalize_public_responses_stream(
     *,
     enforce_openai_sdk_contract: bool = True,
 ) -> AsyncIterator[str]:
+    stream = _normalize_reasoning_summary_stream(stream)
     """Normalize the upstream SSE event stream for the public /v1 surface.
 
     Args:
@@ -5482,6 +6414,18 @@ def _normalize_public_stream_payload(
     enforce_openai_sdk_contract: bool = True,
 ) -> tuple[dict[str, JsonValue] | None, str | None]:
     event_type = payload.get("type")
+    if event_type == "response.reasoning_summary_text.done" and isinstance(payload.get("text"), str):
+        normalized_payload = dict(payload)
+        normalized_payload["text"] = _strip_blank_html_comment_lines(cast(str, payload["text"]))
+        return normalized_payload, None
+    if event_type in {"response.reasoning_summary_part.added", "response.reasoning_summary_part.done"}:
+        part = payload.get("part")
+        if is_json_mapping(part) and part.get("type") == "summary_text" and isinstance(part.get("text"), str):
+            normalized_part = dict(part)
+            normalized_part["text"] = _strip_blank_html_comment_lines(cast(str, part["text"]))
+            normalized_payload = dict(payload)
+            normalized_payload["part"] = normalized_part
+            return normalized_payload, None
     # Drop Codex-internal vendor events on the public /v1 surface only. The
     # upstream Codex backend emits non-standard events (notably
     # ``codex.rate_limits``, which is throttled per rate-limit window and so
@@ -5711,6 +6655,8 @@ def _normalize_public_response_mapping(
 
 def _normalize_public_output_item(item: Mapping[str, JsonValue]) -> dict[str, JsonValue] | None:
     item_type = item.get("type")
+    if item_type == "reasoning":
+        return _normalize_reasoning_output_item(item)
     if isinstance(item_type, str) and _is_public_passthrough_output_item_type(item_type):
         return dict(item)
     text_value = _extract_public_output_item_text(item)
@@ -5726,6 +6672,158 @@ def _normalize_public_output_item(item: Mapping[str, JsonValue]) -> dict[str, Js
     if isinstance(item_id, str) and item_id:
         normalized["id"] = item_id
     return normalized
+
+
+def _normalize_reasoning_output_item(item: Mapping[str, JsonValue]) -> dict[str, JsonValue]:
+    """Remove renderer-only blank HTML comments from reasoning summaries.
+
+    Recent Codex reasoning summaries can include a standalone ``<!-- -->``
+    markdown placeholder after the visible summary heading. The Codex TUI renders
+    reasoning summary text directly, so proxying that inert marker verbatim makes
+    it visible between tool calls. Limit the cleanup to reasoning summary text so
+    assistant/user-visible content and non-empty HTML comments remain untouched.
+    """
+
+    normalized = dict(item)
+    summary = item.get("summary")
+    if not isinstance(summary, list):
+        return normalized
+
+    normalized_summary: list[JsonValue] = []
+    changed = False
+    for part in summary:
+        if not is_json_mapping(part):
+            normalized_summary.append(part)
+            continue
+        text = part.get("text")
+        if part.get("type") != "summary_text" or not isinstance(text, str):
+            normalized_summary.append(dict(part))
+            continue
+        cleaned = _strip_blank_html_comment_lines(text)
+        normalized_part = dict(part)
+        normalized_part["text"] = cleaned
+        normalized_summary.append(normalized_part)
+        changed = changed or cleaned != text
+
+    if changed:
+        normalized["summary"] = normalized_summary
+    return normalized
+
+
+def _strip_blank_html_comment_lines(text: str) -> str:
+    terminal_match = None
+    for match in _REASONING_SUMMARY_BLANK_HTML_COMMENT_RE.finditer(text):
+        if match.end() == len(text):
+            terminal_match = match
+    cleaned, count = _REASONING_SUMMARY_BLANK_HTML_COMMENT_RE.subn("", text)
+    if count == 0:
+        return text
+    if terminal_match is not None:
+        return cleaned.rstrip("\r\n")
+    return cleaned
+
+
+def _reasoning_summary_delta_key(payload: Mapping[str, JsonValue]) -> tuple[str | None, int | None, int | None]:
+    item_id = payload.get("item_id")
+    output_index = payload.get("output_index")
+    summary_index = payload.get("summary_index")
+    return (
+        item_id if isinstance(item_id, str) else None,
+        output_index if isinstance(output_index, int) else None,
+        summary_index if isinstance(summary_index, int) else None,
+    )
+
+
+def _could_be_blank_html_comment_line(text: str) -> bool:
+    candidate = text.rsplit("\n", 1)[-1].lstrip(" \t")
+    if not candidate:
+        return False
+    if not candidate.startswith("<!--"):
+        return "<!--".startswith(candidate)
+    remainder = candidate[4:].lstrip()
+    if not remainder.startswith("-->"):
+        return "-->".startswith(remainder)
+    return not remainder[3:].strip(" \t\r")
+
+
+def _is_reasoning_summary_interleavable_event(event_type: JsonValue | None) -> bool:
+    return isinstance(event_type, str) and (event_type == "response.in_progress" or event_type.startswith("codex."))
+
+
+async def _normalize_reasoning_summary_stream(stream: AsyncIterator[str]) -> AsyncIterator[str]:
+    pending: dict[tuple[str | None, int | None, int | None], list[dict[str, JsonValue]]] = {}
+
+    def flush(key: tuple[str | None, int | None, int | None]) -> list[str]:
+        payloads = pending.pop(key, [])
+        text = "".join(cast(str, payload.get("delta")) for payload in payloads)
+        cleaned = _strip_blank_html_comment_lines(text)
+        if cleaned == text:
+            return [format_sse_event(payload) for payload in payloads]
+        if not cleaned or not payloads:
+            return []
+        normalized = dict(payloads[0])
+        normalized["delta"] = cleaned
+        return [format_sse_event(normalized)]
+
+    async for event_block in stream:
+        payload = _parse_sse_payload(event_block)
+        if payload is None:
+            yield event_block
+            continue
+        event_type = payload.get("type")
+        event_key = _reasoning_summary_delta_key(payload)
+        if (
+            pending
+            and not _is_reasoning_summary_interleavable_event(event_type)
+            and not (
+                event_type in _REASONING_SUMMARY_DELTA_TYPES | _REASONING_SUMMARY_DONE_TYPES and event_key in pending
+            )
+        ):
+            for pending_key in tuple(pending):
+                for buffered in flush(pending_key):
+                    yield buffered
+        if event_type in _REASONING_SUMMARY_DELTA_TYPES:
+            delta = payload.get("delta")
+            if not isinstance(delta, str):
+                yield event_block
+                continue
+            key = event_key
+            if key in pending:
+                pending[key].append(payload)
+                buffered_text = "".join(cast(str, item.get("delta")) for item in pending[key])
+                if _strip_blank_html_comment_lines(buffered_text) != buffered_text:
+                    for buffered in flush(key):
+                        yield buffered
+                    continue
+                if _could_be_blank_html_comment_line(buffered_text):
+                    continue
+                for buffered in flush(key):
+                    yield buffered
+                continue
+            cleaned_delta = _strip_blank_html_comment_lines(delta)
+            if cleaned_delta != delta:
+                normalized_payload = dict(payload)
+                normalized_payload["delta"] = cleaned_delta
+                yield format_sse_event(normalized_payload)
+                continue
+            if _could_be_blank_html_comment_line(delta):
+                pending[key] = [payload]
+                continue
+            yield event_block
+            continue
+        if event_type in _REASONING_SUMMARY_DONE_TYPES:
+            key = event_key
+            for buffered in flush(key):
+                yield buffered
+        elif event_type in _PUBLIC_RESPONSE_STREAM_TERMINAL_TYPES:
+            for key in tuple(pending):
+                for buffered in flush(key):
+                    yield buffered
+        yield event_block
+
+    for key in tuple(pending):
+        for buffered in flush(key):
+            yield buffered
 
 
 def _is_public_passthrough_output_item_type(item_type: str) -> bool:

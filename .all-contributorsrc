@@ -898,6 +898,111 @@
       "contributions": [
         "code"
       ]
+    },
+    {
+      "login": "kevinWangSheng",
+      "name": "Shawn",
+      "avatar_url": "https://avatars.githubusercontent.com/u/118158941?v=4",
+      "profile": "https://github.com/kevinWangSheng",
+      "contributions": [
+        "code"
+      ]
+    },
+    {
+      "login": "luawl",
+      "name": "luawl",
+      "avatar_url": "https://avatars.githubusercontent.com/u/252236154?v=4",
+      "profile": "https://github.com/luawl",
+      "contributions": [
+        "code",
+        "test"
+      ]
+    },
+    {
+      "login": "knightcn1983",
+      "name": "knightcn1983",
+      "avatar_url": "https://avatars.githubusercontent.com/u/66906018?v=4",
+      "profile": "https://github.com/knightcn1983",
+      "contributions": [
+        "code",
+        "test"
+      ]
+    },
+    {
+      "login": "nazirulhafiy",
+      "name": "Hafiy",
+      "avatar_url": "https://avatars.githubusercontent.com/u/255521226?v=4",
+      "profile": "https://github.com/nazirulhafiy",
+      "contributions": [
+        "code",
+        "test",
+        "doc"
+      ]
+    },
+    {
+      "login": "kvz",
+      "name": "Kevin van Zonneveld",
+      "avatar_url": "https://avatars.githubusercontent.com/u/26752?v=4",
+      "profile": "https://github.com/kvz",
+      "contributions": [
+        "code"
+      ]
+    },
+    {
+      "login": "zepx",
+      "name": "Choong Jun Jin",
+      "avatar_url": "https://avatars.githubusercontent.com/u/1377772?v=4",
+      "profile": "https://github.com/zepx",
+      "contributions": [
+        "code",
+        "test"
+      ]
+    },
+    {
+      "login": "leventov",
+      "name": "Roman Leventov",
+      "avatar_url": "https://avatars.githubusercontent.com/u/609240?v=4",
+      "profile": "https://github.com/leventov",
+      "contributions": [
+        "code"
+      ]
+    },
+    {
+      "login": "ATofighi",
+      "name": "AliReza Tofighi",
+      "avatar_url": "https://avatars.githubusercontent.com/u/3256261?v=4",
+      "profile": "https://t.me/Tofighi_Times",
+      "contributions": [
+        "doc"
+      ]
+    },
+    {
+      "login": "dmdfami",
+      "name": "DOMANHDUC",
+      "avatar_url": "https://avatars.githubusercontent.com/u/222630288?v=4",
+      "profile": "https://github.com/dmdfami",
+      "contributions": [
+        "code"
+      ]
+    },
+    {
+      "login": "HeroOfOdyssey",
+      "name": "Kwan Perry",
+      "avatar_url": "https://avatars.githubusercontent.com/u/144704328?v=4",
+      "profile": "https://github.com/HeroOfOdyssey",
+      "contributions": [
+        "code"
+      ]
+    },
+    {
+      "login": "jamesx0416",
+      "name": "James",
+      "avatar_url": "https://avatars.githubusercontent.com/u/105842516?v=4",
+      "profile": "https://github.com/jamesx0416",
+      "contributions": [
+        "code",
+        "test"
+      ]
     }
   ],
   "contributorsPerLine": 7,

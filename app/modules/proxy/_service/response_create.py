@@ -18,6 +18,8 @@ from app.core.clients.proxy import (
     ImageFetchSession,
     ProxyResponseError,
     _inline_content_images,
+    _normalize_responses_lite_websocket_client_metadata,
+    apply_codex_installation_metadata,
 )
 from app.core.config.settings import DEFAULT_HOME_DIR, get_settings
 from app.core.errors import OpenAIErrorEnvelope, openai_error
@@ -42,6 +44,12 @@ _RESPONSE_CREATE_TOOL_OUTPUT_OMISSION_NOTICE = (
 )
 _RESPONSE_CREATE_IMAGE_OMISSION_NOTICE = "[codex-lb omitted historical inline image to fit upstream websocket budget]"
 _OVERSIZED_RESPONSE_CREATE_DUMP_DIR: Path | None = None
+_RESPONSE_CREATE_COMPATIBILITY_METADATA_HEADERS = (
+    "x-codex-turn-metadata",
+    "x-openai-subagent",
+    "x-codex-parent-thread-id",
+    "x-codex-window-id",
+)
 
 
 def _service_module() -> Any | None:
@@ -216,12 +224,7 @@ def _response_create_text_with_account_installation_id(
         return text_data
     upstream_payload = cast(dict[str, JsonValue], raw_payload)
 
-    raw_metadata = upstream_payload.get("client_metadata")
-    client_metadata: dict[str, JsonValue] = {}
-    if is_json_mapping(raw_metadata):
-        client_metadata.update({key: value for key, value in raw_metadata.items() if isinstance(key, str)})
-    client_metadata["x-codex-installation-id"] = installation_id
-    upstream_payload["client_metadata"] = client_metadata
+    apply_codex_installation_metadata(upstream_payload, installation_id)
     return json.dumps(upstream_payload, ensure_ascii=True, separators=(",", ":"))
 
 
@@ -265,10 +268,19 @@ def _slim_response_create_payload_for_upstream(
     }
 
 
+_PENDING_TOOL_CALL_OUTPUT_ITEM_TYPE_BY_CALL_TYPE = {
+    "function_call": "function_call_output",
+    "custom_tool_call": "custom_tool_call_output",
+    "apply_patch_call": "apply_patch_call_output",
+}
+_PENDING_TOOL_CALL_ITEM_TYPES = frozenset(_PENDING_TOOL_CALL_OUTPUT_ITEM_TYPE_BY_CALL_TYPE)
+_PENDING_TOOL_CALL_OUTPUT_ITEM_TYPES = frozenset(_PENDING_TOOL_CALL_OUTPUT_ITEM_TYPE_BY_CALL_TYPE.values())
+
+
 def _function_call_output_call_ids(input_items: list[JsonValue]) -> set[str]:
     call_ids: set[str] = set()
     for item in input_items:
-        if not isinstance(item, dict) or item.get("type") != "function_call_output":
+        if not isinstance(item, dict) or item.get("type") not in _PENDING_TOOL_CALL_OUTPUT_ITEM_TYPES:
             continue
         call_id = item.get("call_id")
         if isinstance(call_id, str) and call_id:
@@ -287,37 +299,64 @@ def _missing_function_call_outputs_for_previous_response(
     return [call_id for call_id in pending_call_ids if call_id not in present_call_ids]
 
 
-def _synthetic_interrupted_function_call_output(call_id: str) -> dict[str, JsonValue]:
-    return {
-        "type": "function_call_output",
+def _synthetic_interrupted_function_call_output(
+    call_id: str,
+    *,
+    call_type: str = "function_call",
+) -> dict[str, JsonValue]:
+    output_type = _PENDING_TOOL_CALL_OUTPUT_ITEM_TYPE_BY_CALL_TYPE.get(call_type, "function_call_output")
+    item: dict[str, JsonValue] = {
+        "type": output_type,
         "call_id": call_id,
         "output": (
             "Tool call was not executed because the previous turn was interrupted before tool output was available."
         ),
     }
+    if output_type == "apply_patch_call_output":
+        item["status"] = "failed"
+    return item
 
 
 def _inject_missing_interrupted_function_call_outputs(
     input_items: list[JsonValue],
     *,
     missing_call_ids: list[str],
+    pending_call_types: Mapping[str, str] | None = None,
 ) -> list[JsonValue]:
     if not missing_call_ids:
         return input_items
+    call_types = pending_call_types or {}
     return [
-        *[_synthetic_interrupted_function_call_output(call_id) for call_id in missing_call_ids],
+        *[
+            _synthetic_interrupted_function_call_output(
+                call_id,
+                call_type=call_types.get(call_id, "function_call"),
+            )
+            for call_id in missing_call_ids
+        ],
         *input_items,
     ]
 
 
-def _response_output_item_done_function_call_id(payload: dict[str, JsonValue] | None) -> str | None:
+def _response_output_item_done_tool_call(payload: dict[str, JsonValue] | None) -> tuple[str, str] | None:
+    """Return ``(call_id, item_type)`` for a completed tool-call output item.
+
+    Covers every tool-call item type that upstream requires a matching output
+    item for on the next anchored request: ``function_call``,
+    ``custom_tool_call``, and ``apply_patch_call``.
+    """
     if not isinstance(payload, dict) or payload.get("type") != "response.output_item.done":
         return None
     item = payload.get("item")
-    if not isinstance(item, dict) or item.get("type") != "function_call":
+    if not isinstance(item, dict):
+        return None
+    item_type = item.get("type")
+    if not isinstance(item_type, str) or item_type not in _PENDING_TOOL_CALL_ITEM_TYPES:
         return None
     call_id = item.get("call_id")
-    return call_id if isinstance(call_id, str) and call_id else None
+    if not isinstance(call_id, str) or not call_id:
+        return None
+    return call_id, item_type
 
 
 def _response_create_too_large_error_envelope(
@@ -528,8 +567,11 @@ def _enforce_response_create_size_limit(request_state: _WebSocketRequestState) -
         error_message=error.get("message"),
         log_prefix="guarded",
     )
+    # 400, not 413: the Codex client surfaces 400 immediately as a non-retryable
+    # invalid request, while 413 burns five full-payload retries and then pins the
+    # session to HTTP transport.
     raise ProxyResponseError(
-        413,
+        400,
         payload,
         failure_phase="validation",
         failure_detail=f"response.create_bytes={payload_size}",
@@ -754,6 +796,7 @@ def _response_create_client_metadata(
     *,
     headers: Mapping[str, str],
     codex_installation_id: str | None = None,
+    preserve_existing_responses_lite: bool = False,
 ) -> Mapping[str, JsonValue] | None:
     raw_value = payload.get("client_metadata")
     client_metadata: dict[str, JsonValue] = {}
@@ -763,10 +806,18 @@ def _response_create_client_metadata(
                 client_metadata[key] = value
 
     normalized_headers = {key.lower(): value for key, value in headers.items()}
-    turn_metadata = normalized_headers.get("x-codex-turn-metadata")
-    if isinstance(turn_metadata, str) and turn_metadata.strip():
-        client_metadata.setdefault("x-codex-turn-metadata", turn_metadata)
+    for header_name in _RESPONSE_CREATE_COMPATIBILITY_METADATA_HEADERS:
+        metadata_value = normalized_headers.get(header_name)
+        if isinstance(metadata_value, str) and metadata_value.strip():
+            client_metadata.setdefault(header_name, metadata_value)
 
-    if codex_installation_id:
-        client_metadata[CODEX_INSTALLATION_ID_HEADER] = codex_installation_id
+    metadata_container: dict[str, JsonValue] = {"client_metadata": client_metadata}
+    apply_codex_installation_metadata(metadata_container, codex_installation_id)
+    normalized_metadata = metadata_container.get("client_metadata")
+    client_metadata = dict(normalized_metadata) if is_json_mapping(normalized_metadata) else {}
+    client_metadata = _normalize_responses_lite_websocket_client_metadata(
+        payload,
+        client_metadata,
+        preserve_existing=preserve_existing_responses_lite,
+    )
     return client_metadata or None

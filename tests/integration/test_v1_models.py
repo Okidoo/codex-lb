@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from dataclasses import replace
+
 import pytest
 
 from app.core.openai.model_registry import ReasoningLevel, UpstreamModel, get_model_registry
@@ -8,6 +11,9 @@ from app.core.types import JsonValue
 pytestmark = pytest.mark.integration
 
 BOOTSTRAP_MODEL_SLUGS = {
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
     "gpt-5.5",
     "gpt-5.4",
     "gpt-5.4-mini",
@@ -36,6 +42,9 @@ EXPECTED_CORE_MODEL_PLANS = {
 }
 
 EXPECTED_BOOTSTRAP_MINIMAL_CLIENT_VERSIONS = {
+    "gpt-5.6-sol": "0.144.0",
+    "gpt-5.6-terra": "0.144.0",
+    "gpt-5.6-luna": "0.144.0",
     "gpt-5.5": "0.124.0",
     "gpt-5.4": "0.98.0",
     "gpt-5.4-mini": "0.98.0",
@@ -97,7 +106,21 @@ async def _create_model_source(
     model: str,
     supports_responses: bool = False,
     supports_streaming: bool = True,
+    context_window: int | None = 8192,
+    raw_metadata_json: str | None = None,
 ) -> str:
+    model_payload: dict[str, object] = {
+        "model": model,
+        "displayName": model,
+        "maxOutputTokens": 1024,
+        "supportsStreaming": supports_streaming,
+        "supportsTools": True,
+        "supportsVision": False,
+    }
+    if context_window is not None:
+        model_payload["contextWindow"] = context_window
+    if raw_metadata_json is not None:
+        model_payload["rawMetadataJson"] = raw_metadata_json
     response = await async_client.post(
         "/api/model-sources/",
         json={
@@ -106,17 +129,7 @@ async def _create_model_source(
             "apiKey": f"token-{name}",
             "supportsChatCompletions": True,
             "supportsResponses": supports_responses,
-            "models": [
-                {
-                    "model": model,
-                    "displayName": model,
-                    "contextWindow": 8192,
-                    "maxOutputTokens": 1024,
-                    "supportsStreaming": supports_streaming,
-                    "supportsTools": True,
-                    "supportsVision": False,
-                }
-            ],
+            "models": [model_payload],
         },
     )
     assert response.status_code == 200
@@ -165,6 +178,61 @@ async def test_v1_models_list(async_client):
 
 
 @pytest.mark.asyncio
+async def test_v1_models_with_client_version_returns_codex_catalog(async_client):
+    """Codex clients configured via `openai_base_url` fetch `<base>/models` with a
+    `client_version` query parameter and can only parse the Codex catalog shape;
+    the OpenAI-compatible list shape makes them silently fall back to bundled
+    model metadata."""
+    await _populate_test_registry()
+    resp = await async_client.get("/v1/models", params={"client_version": "0.144.1"})
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert "models" in payload
+    slugs = {entry["slug"] for entry in payload["models"]}
+    assert "gpt-5.2" in slugs
+    codex_resp = await async_client.get("/backend-api/codex/models")
+    assert codex_resp.status_code == 200
+    assert payload == codex_resp.json()
+
+
+@pytest.mark.asyncio
+async def test_v1_models_with_client_version_includes_model_messages(async_client):
+    """The Codex model picker needs `model_messages` from the live catalog to
+    display models absent from its bundled metadata; the catalog served on the
+    `client_version` path must preserve the field verbatim."""
+    registry = get_model_registry()
+    model_messages: dict[str, JsonValue] = {
+        "instructions_template": "You are a coding assistant.",
+        "instructions_variables": {"personality_default": ""},
+        "approvals": None,
+    }
+    models = [
+        _make_upstream_model(
+            "gpt-5.3-codex",
+            raw={
+                "shell_type": "shell_command",
+                "visibility": "list",
+                "model_messages": model_messages,
+            },
+        ),
+    ]
+    await registry.update({"plus": models, "pro": models})
+
+    resp = await async_client.get("/v1/models", params={"client_version": "0.144.1"})
+    assert resp.status_code == 200
+    entries = {entry["slug"]: entry for entry in resp.json()["models"]}
+    assert entries["gpt-5.3-codex"]["model_messages"] == model_messages
+
+
+@pytest.mark.asyncio
+async def test_v1_models_with_empty_client_version_keeps_openai_shape(async_client):
+    await _populate_test_registry()
+    resp = await async_client.get("/v1/models?client_version=")
+    assert resp.status_code == 200
+    assert resp.json()["object"] == "list"
+
+
+@pytest.mark.asyncio
 async def test_v1_models_uses_bootstrap_models_when_registry_not_populated(async_client):
     registry = get_model_registry()
     registry._snapshot = None
@@ -189,6 +257,66 @@ async def test_backend_codex_models_uses_bootstrap_upstream_metadata(async_clien
     assert set(entries) == set(EXPECTED_BOOTSTRAP_MINIMAL_CLIENT_VERSIONS)
     for slug, expected_version in EXPECTED_BOOTSTRAP_MINIMAL_CLIENT_VERSIONS.items():
         assert entries[slug]["minimal_client_version"] == expected_version
+
+    sol = entries["gpt-5.6-sol"]
+    assert sol["display_name"] == "GPT-5.6-Sol"
+    assert sol["context_window"] == 372_000
+    assert sol["default_reasoning_level"] == "low"
+    assert {level["effort"] for level in sol["supported_reasoning_levels"]} == {
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+        "ultra",
+    }
+    assert sol["additional_speed_tiers"] == ["fast"]
+
+    terra = entries["gpt-5.6-terra"]
+    assert terra["default_reasoning_level"] == "medium"
+    assert {level["effort"] for level in terra["supported_reasoning_levels"]} == {
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+        "ultra",
+    }
+
+    luna = entries["gpt-5.6-luna"]
+    assert luna["default_reasoning_level"] == "medium"
+    assert {level["effort"] for level in luna["supported_reasoning_levels"]} == {
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+    }
+
+    # Upstream-exact GPT-5.6 metadata as served on the Codex catalog wire
+    # (codex-rs/models-manager/models.json at rust-v0.144.1).
+    for gpt56 in (sol, terra, luna):
+        assert gpt56["minimal_client_version"] == "0.144.0"
+        assert gpt56["tool_mode"] == "code_mode_only"
+        assert gpt56["use_responses_lite"] is True
+        assert gpt56["apply_patch_tool_type"] == "freeform"
+        assert gpt56["web_search_tool_type"] == "text_and_image"
+        assert gpt56["truncation_policy"] == {"mode": "tokens", "limit": 10_000}
+        assert gpt56["default_reasoning_summary"] == "none"
+        assert gpt56["reasoning_summary_format"] == "experimental"
+        assert gpt56["comp_hash"] == "3000"
+        assert gpt56["experimental_supported_tools"] == []
+        assert gpt56["max_context_window"] == 372_000
+        assert gpt56["service_tiers"] == [
+            {"id": "priority", "name": "Fast", "description": "1.5x speed, increased usage"}
+        ]
+        assert {"edu_plus", "edu_pro", "enterprise_cbp_automation", "sci"} <= set(gpt56["available_in_plans"])
+    assert sol["multi_agent_version"] == "v2"
+    assert terra["multi_agent_version"] == "v2"
+    assert luna["multi_agent_version"] == "v1"
+    assert "most capable model yet" in sol["availability_nux"]["message"]
+    assert terra["availability_nux"] is None
+    assert luna["availability_nux"] is None
 
     gpt54 = entries["gpt-5.4"]
     assert gpt54["minimal_client_version"] == "0.98.0"
@@ -448,6 +576,59 @@ async def test_backend_codex_models_includes_only_responses_capable_source_model
 
 
 @pytest.mark.asyncio
+async def test_backend_codex_models_defaults_source_model_context_window(async_client):
+    await _create_model_source(
+        async_client,
+        name="codex-source-default-context",
+        model="external-default-context-model",
+        supports_responses=True,
+        context_window=None,
+    )
+
+    response = await async_client.get("/backend-api/codex/models")
+
+    assert response.status_code == 200
+    source_entry = next(item for item in response.json()["models"] if item["slug"] == "external-default-context-model")
+    assert source_entry["context_window"] == 128_000
+    assert source_entry["shell_type"] == "shell_command"
+    assert source_entry["max_context_window"] == 128_000
+    assert source_entry["truncation_policy"] == {"mode": "tokens", "limit": 10_000}
+    assert source_entry["include_skills_usage_instructions"] is False
+    assert source_entry["supports_image_detail_original"] is False
+    assert source_entry["supports_search_tool"] is False
+    assert source_entry["use_responses_lite"] is False
+    assert source_entry["experimental_supported_tools"] == []
+    assert source_entry["prefer_websockets"] is False
+
+
+@pytest.mark.asyncio
+async def test_backend_codex_models_never_exposes_source_request_overrides(async_client):
+    await _create_model_source(
+        async_client,
+        name="codex-source-overrides",
+        model="external-overrides-model",
+        supports_responses=True,
+        raw_metadata_json=json.dumps(
+            {
+                "source_request_overrides": {"options": {"num_ctx": 32768}, "temperature": 0.2},
+                "supports_search_tool": True,
+            }
+        ),
+    )
+
+    response = await async_client.get("/backend-api/codex/models")
+
+    assert response.status_code == 200
+    payload = response.json()
+    source_entry = next(item for item in payload["models"] if item["slug"] == "external-overrides-model")
+    assert "source_request_overrides" not in source_entry
+    # Capability metadata still flows through to the client-visible entry.
+    assert source_entry["supports_search_tool"] is True
+    # The operator override config must not leak anywhere in the catalog payload.
+    assert "source_request_overrides" not in response.text
+
+
+@pytest.mark.asyncio
 async def test_backend_codex_models_returns_format1(async_client):
     registry = get_model_registry()
     models = [
@@ -639,6 +820,11 @@ async def test_backend_codex_models_entry_has_upstream_fields(async_client):
                 "visibility": "list",
                 "availability_nux": None,
                 "upgrade": {"model": "gpt-5.4", "migration_markdown": "Upgrade!"},
+                "model_messages": {
+                    "instructions_template": "You are a coding assistant.",
+                    "instructions_variables": {"personality_default": ""},
+                    "approvals": None,
+                },
             },
             base_instructions="You are a helpful coding assistant.",
         ),
@@ -659,6 +845,11 @@ async def test_backend_codex_models_entry_has_upstream_fields(async_client):
     assert entry["visibility"] == "list"
     assert entry["availability_nux"] is None
     assert entry["upgrade"] == {"model": "gpt-5.4", "migration_markdown": "Upgrade!"}
+    assert entry["model_messages"] == {
+        "instructions_template": "You are a coding assistant.",
+        "instructions_variables": {"personality_default": ""},
+        "approvals": None,
+    }
 
 
 @pytest.mark.asyncio
@@ -1018,6 +1209,36 @@ async def test_model_sets_are_consistent_across_api_endpoints(async_client):
 
 
 @pytest.mark.asyncio
+async def test_dashboard_models_exposes_extended_reasoning_efforts(async_client):
+    registry = get_model_registry()
+    models = [
+        _make_upstream_model(
+            "gpt-5.6-sol",
+            raw={
+                "shell_type": "shell_command",
+                "visibility": "list",
+            },
+        )
+    ]
+    models[0] = replace(
+        models[0],
+        supported_reasoning_levels=tuple(
+            ReasoningLevel(effort=effort, description=effort)
+            for effort in ("low", "medium", "high", "xhigh", "max", "ultra")
+        ),
+        default_reasoning_level="low",
+    )
+    await registry.update({"plus": models, "pro": models})
+
+    response = await async_client.get("/api/models")
+
+    assert response.status_code == 200
+    model = next(item for item in response.json()["models"] if item["id"] == "gpt-5.6-sol")
+    assert model["supportedReasoningEfforts"] == ["low", "medium", "high", "xhigh", "max", "ultra"]
+    assert model["defaultReasoningEffort"] == "low"
+
+
+@pytest.mark.asyncio
 async def test_model_context_window_override(async_client, monkeypatch):
     registry = get_model_registry()
     models = [_make_upstream_model("gpt-5.4")]
@@ -1180,3 +1401,331 @@ async def test_v1_models_does_not_promote_raw_max_context_window(async_client):
     assert entry["metadata"]["context_window"] == 272_000
     assert entry["metadata"]["input_context_window"] == 272_000
     assert entry["metadata"].get("max_output_tokens") is None
+
+
+@pytest.mark.asyncio
+async def test_codex_catalog_hides_last_known_metadata_omitted_by_live_refresh(async_client):
+    registry = get_model_registry()
+    sol = _make_upstream_model(
+        "gpt-5.6-sol",
+        base_instructions="full live sol instructions",
+        raw={
+            "shell_type": "shell_command",
+            "visibility": "list",
+            "use_responses_lite": True,
+        },
+    )
+    terra = _make_upstream_model("gpt-5.6-terra")
+    await registry.update({"plus": [sol, terra]})
+    await registry.update({"plus": [terra]})
+
+    codex_resp = await async_client.get(
+        "/backend-api/codex/models",
+        params={"client_version": "0.144.1"},
+    )
+    assert codex_resp.status_code == 200
+    entries = {item["slug"]: item for item in codex_resp.json()["models"]}
+    assert entries["gpt-5.6-sol"]["visibility"] == "hide"
+    assert entries["gpt-5.6-sol"]["base_instructions"] == "full live sol instructions"
+    assert entries["gpt-5.6-sol"]["use_responses_lite"] is True
+    assert entries["gpt-5.6-terra"]["visibility"] == "list"
+
+    v1_resp = await async_client.get("/v1/models")
+    assert v1_resp.status_code == 200
+    assert "gpt-5.6-sol" not in {item["id"] for item in v1_resp.json()["data"]}
+
+
+@pytest.mark.asyncio
+async def test_source_model_shadows_retained_metadata_with_the_same_slug(async_client):
+    registry = get_model_registry()
+    sol = _make_upstream_model("gpt-5.6-sol", base_instructions="retained subscription metadata")
+    terra = _make_upstream_model("gpt-5.6-terra")
+    await registry.update({"plus": [sol, terra]})
+    await registry.update({"plus": [terra]})
+    await _create_model_source(
+        async_client,
+        name="live-sol-source",
+        model="gpt-5.6-sol",
+        supports_responses=True,
+    )
+
+    settings = await async_client.put(
+        "/api/settings",
+        json={
+            "stickyThreadsEnabled": False,
+            "preferEarlierResetAccounts": False,
+            "totpRequiredOnLogin": False,
+            "apiKeyAuthEnabled": True,
+        },
+    )
+    assert settings.status_code == 200
+    created = await async_client.post(
+        "/api/api-keys/",
+        json={"name": "exact live sol source", "allowedModels": ["gpt-5.6-sol"]},
+    )
+    assert created.status_code == 200
+
+    response = await async_client.get(
+        "/backend-api/codex/models",
+        headers={"Authorization": f"Bearer {created.json()['key']}"},
+    )
+    assert response.status_code == 200
+    entries = [item for item in response.json()["models"] if item["slug"] == "gpt-5.6-sol"]
+    assert len(entries) == 1
+    assert entries[0]["visibility"] == "list"
+    assert "gpt-5.6-sol" in {item["id"] for item in response.json()["data"]}
+
+
+@pytest.mark.asyncio
+async def test_filtered_same_slug_source_does_not_hide_allowed_retained_metadata(async_client):
+    registry = get_model_registry()
+    sol = _make_upstream_model("gpt-5.6-sol", base_instructions="retained subscription metadata")
+    terra = _make_upstream_model("gpt-5.6-terra")
+    await registry.update({"plus": [sol, terra]})
+    await registry.update({"plus": [terra]})
+    await _create_model_source(
+        async_client,
+        name="filtered-live-sol-source",
+        model="gpt-5.6-sol",
+        supports_responses=True,
+    )
+
+    settings = await async_client.put(
+        "/api/settings",
+        json={
+            "stickyThreadsEnabled": False,
+            "preferEarlierResetAccounts": False,
+            "totpRequiredOnLogin": False,
+            "apiKeyAuthEnabled": True,
+        },
+    )
+    assert settings.status_code == 200
+    created = await async_client.post(
+        "/api/api-keys/",
+        json={
+            "name": "canonical retained sol alias",
+            "allowedModels": ["gpt-5.6-sol-extra-high-fast"],
+        },
+    )
+    assert created.status_code == 200
+
+    response = await async_client.get(
+        "/backend-api/codex/models",
+        headers={"Authorization": f"Bearer {created.json()['key']}"},
+    )
+    assert response.status_code == 200
+    entries = [item for item in response.json()["models"] if item["slug"] == "gpt-5.6-sol"]
+    assert len(entries) == 1
+    assert entries[0]["visibility"] == "hide"
+    assert entries[0]["base_instructions"] == "retained subscription metadata"
+    assert "gpt-5.6-sol" not in {item["id"] for item in response.json()["data"]}
+
+
+@pytest.mark.asyncio
+async def test_raw_hidden_same_slug_source_does_not_shadow_retained_metadata(async_client):
+    registry = get_model_registry()
+    sol = _make_upstream_model(
+        "gpt-5.6-sol",
+        base_instructions="retained sol metadata",
+        raw={"use_responses_lite": True},
+    )
+    terra = _make_upstream_model("gpt-5.6-terra")
+    await registry.update({"plus": [sol, terra]})
+    await registry.update({"plus": [terra]})
+    await _create_model_source(
+        async_client,
+        name="raw-hidden-same-slug-sol-source",
+        model="gpt-5.6-sol",
+        supports_responses=True,
+        raw_metadata_json=json.dumps({"visibility": "hide", "use_responses_lite": False}),
+    )
+    enable = await async_client.put(
+        "/api/settings",
+        json={
+            "stickyThreadsEnabled": False,
+            "preferEarlierResetAccounts": False,
+            "totpRequiredOnLogin": False,
+            "apiKeyAuthEnabled": True,
+        },
+    )
+    assert enable.status_code == 200
+    created = await async_client.post(
+        "/api/api-keys/",
+        json={
+            "name": "raw-hidden-source-codex-visibility",
+            "allowedModels": ["gpt-5.6-sol"],
+            "applyToCodexModel": True,
+        },
+    )
+    assert created.status_code == 200
+
+    response = await async_client.get(
+        "/backend-api/codex/models",
+        headers={"Authorization": f"Bearer {created.json()['key']}"},
+    )
+
+    assert response.status_code == 200
+    entries = {item["slug"]: item for item in response.json()["models"]}
+    assert entries["gpt-5.6-sol"]["visibility"] == "hide"
+    assert entries["gpt-5.6-sol"]["base_instructions"] == "retained sol metadata"
+    assert entries["gpt-5.6-sol"]["use_responses_lite"] is True
+    assert "gpt-5.6-sol" not in {item["id"] for item in response.json()["data"]}
+
+
+@pytest.mark.asyncio
+async def test_list_visible_same_slug_source_wins_over_earlier_hidden_source(async_client):
+    registry = get_model_registry()
+    sol = _make_upstream_model("gpt-5.6-sol", base_instructions="retained sol metadata")
+    terra = _make_upstream_model("gpt-5.6-terra")
+    await registry.update({"plus": [sol, terra]})
+    await registry.update({"plus": [terra]})
+    await _create_model_source(
+        async_client,
+        name="first-hidden-same-slug-source",
+        model="gpt-5.6-sol",
+        supports_responses=True,
+        raw_metadata_json=json.dumps({"visibility": "hide", "use_responses_lite": False}),
+    )
+    await _create_model_source(
+        async_client,
+        name="second-visible-same-slug-source",
+        model="gpt-5.6-sol",
+        supports_responses=True,
+        raw_metadata_json=json.dumps({"visibility": "list", "use_responses_lite": True}),
+    )
+    enable = await async_client.put(
+        "/api/settings",
+        json={
+            "stickyThreadsEnabled": False,
+            "preferEarlierResetAccounts": False,
+            "totpRequiredOnLogin": False,
+            "apiKeyAuthEnabled": True,
+        },
+    )
+    assert enable.status_code == 200
+    created = await async_client.post(
+        "/api/api-keys/",
+        json={
+            "name": "visible-source-precedence",
+            "allowedModels": ["gpt-5.6-sol"],
+            "applyToCodexModel": True,
+        },
+    )
+    assert created.status_code == 200
+
+    response = await async_client.get(
+        "/backend-api/codex/models",
+        headers={"Authorization": f"Bearer {created.json()['key']}"},
+    )
+
+    assert response.status_code == 200
+    entries = [item for item in response.json()["models"] if item["slug"] == "gpt-5.6-sol"]
+    assert len(entries) == 1
+    assert entries[0]["visibility"] == "list"
+    assert entries[0]["use_responses_lite"] is True
+    assert "gpt-5.6-sol" in {item["id"] for item in response.json()["data"]}
+
+
+@pytest.mark.asyncio
+async def test_first_partial_refresh_serves_hidden_bootstrap_metadata(async_client):
+    registry = get_model_registry()
+    await registry.update({"plus": [_make_upstream_model("gpt-5.6-terra")]})
+
+    codex_resp = await async_client.get("/backend-api/codex/models")
+    entries = {item["slug"]: item for item in codex_resp.json()["models"]}
+    assert entries["gpt-5.6-sol"]["visibility"] == "hide"
+    assert entries["gpt-5.6-sol"]["use_responses_lite"] is True
+
+    v1_resp = await async_client.get("/v1/models")
+    assert "gpt-5.6-sol" not in {item["id"] for item in v1_resp.json()["data"]}
+
+
+@pytest.mark.asyncio
+async def test_codex_visibility_allowlist_keeps_retained_metadata_hidden(async_client):
+    registry = get_model_registry()
+    sol = _make_upstream_model("gpt-5.6-sol", base_instructions="retained sol")
+    terra = _make_upstream_model("gpt-5.6-terra")
+    await registry.update({"plus": [sol, terra]})
+    await registry.update({"plus": [terra]})
+
+    enable = await async_client.put(
+        "/api/settings",
+        json={
+            "stickyThreadsEnabled": False,
+            "preferEarlierResetAccounts": False,
+            "totpRequiredOnLogin": False,
+            "apiKeyAuthEnabled": True,
+        },
+    )
+    assert enable.status_code == 200
+    created = await async_client.post(
+        "/api/api-keys/",
+        json={
+            "name": "retained-codex-visibility",
+            "allowedModels": ["gpt-5.6-terra"],
+            "applyToCodexModel": True,
+        },
+    )
+    assert created.status_code == 200
+
+    resp = await async_client.get(
+        "/backend-api/codex/models",
+        headers={"Authorization": f"Bearer {created.json()['key']}"},
+    )
+    entries = {item["slug"]: item for item in resp.json()["models"]}
+    assert entries["gpt-5.6-terra"]["visibility"] == "list"
+    assert entries["gpt-5.6-sol"]["visibility"] == "hide"
+    assert entries["gpt-5.6-sol"]["base_instructions"] == "retained sol"
+
+
+@pytest.mark.asyncio
+async def test_hidden_same_slug_source_does_not_shadow_retained_metadata_for_codex_visibility_allowlist(
+    async_client,
+):
+    registry = get_model_registry()
+    sol = _make_upstream_model(
+        "gpt-5.6-sol",
+        base_instructions="retained sol metadata",
+        raw={"use_responses_lite": True},
+    )
+    terra = _make_upstream_model("gpt-5.6-terra")
+    await registry.update({"plus": [sol, terra]})
+    await registry.update({"plus": [terra]})
+    await _create_model_source(
+        async_client,
+        name="hidden-same-slug-sol-source",
+        model="gpt-5.6-sol",
+        supports_responses=True,
+    )
+
+    enable = await async_client.put(
+        "/api/settings",
+        json={
+            "stickyThreadsEnabled": False,
+            "preferEarlierResetAccounts": False,
+            "totpRequiredOnLogin": False,
+            "apiKeyAuthEnabled": True,
+        },
+    )
+    assert enable.status_code == 200
+    created = await async_client.post(
+        "/api/api-keys/",
+        json={
+            "name": "retained-codex-visibility-alias",
+            "allowedModels": ["gpt-5.6-sol-extra-high-fast"],
+            "applyToCodexModel": True,
+        },
+    )
+    assert created.status_code == 200
+
+    resp = await async_client.get(
+        "/backend-api/codex/models",
+        headers={"Authorization": f"Bearer {created.json()['key']}"},
+    )
+
+    assert resp.status_code == 200
+    entries = {item["slug"]: item for item in resp.json()["models"]}
+    assert entries["gpt-5.6-sol"]["visibility"] == "hide"
+    assert entries["gpt-5.6-sol"]["base_instructions"] == "retained sol metadata"
+    assert entries["gpt-5.6-sol"]["use_responses_lite"] is True
+    assert "gpt-5.6-sol" not in {item["id"] for item in resp.json()["data"]}

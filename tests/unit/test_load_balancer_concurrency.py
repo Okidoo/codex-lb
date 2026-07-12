@@ -14,12 +14,21 @@ import app.modules.proxy.load_balancer as load_balancer_module
 from app.core.crypto import TokenEncryptor
 from app.db.models import Account, AccountStatus, StickySessionKind, UsageHistory
 from app.modules.api_keys.repository import ApiKeysRepository
-from app.modules.proxy.load_balancer import LoadBalancer
+from app.modules.proxy.load_balancer import LoadBalancer, effective_account_concurrency_caps
 from app.modules.proxy.repo_bundle import ProxyRepositories
 from app.modules.request_logs.repository import RequestLogsRepository
 from app.modules.usage.repository import AdditionalUsageRepository
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def _use_dashboard_caps_from_test_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _SettingsCache:
+        async def get(self) -> object:
+            return load_balancer_module.get_settings()
+
+    monkeypatch.setattr(load_balancer_module, "get_settings_cache", lambda: _SettingsCache())
 
 
 def _make_account(account_id: str) -> Account:
@@ -36,6 +45,63 @@ def _make_account(account_id: str) -> Account:
         status=AccountStatus.ACTIVE,
         deactivation_reason=None,
     )
+
+
+def test_effective_account_concurrency_caps_supports_partial_settings_double(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        load_balancer_module,
+        "get_settings",
+        lambda: SimpleNamespace(circuit_breaker_enabled=False),
+    )
+
+    assert effective_account_concurrency_caps() == load_balancer_module.AccountConcurrencyCaps(
+        response_create_limit=4,
+        stream_limit=8,
+    )
+
+
+@pytest.mark.asyncio
+async def test_account_lease_uses_explicit_dashboard_cap_snapshot_not_startup_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    startup_settings = SimpleNamespace(
+        proxy_account_lease_ttl_seconds=60.0,
+        proxy_request_budget_seconds=10.0,
+        http_responses_stream_request_budget_seconds=7200.0,
+        http_responses_session_bridge_request_budget_seconds=7200.0,
+        proxy_account_response_create_limit=1,
+        proxy_account_stream_limit=1,
+    )
+    dashboard_settings = SimpleNamespace(
+        proxy_account_response_create_limit=1,
+        proxy_account_stream_limit=1,
+    )
+
+    monkeypatch.setattr(load_balancer_module, "get_settings", lambda: startup_settings)
+    balancer = LoadBalancer(lambda: _repo_factory(_StubAccountsRepository([]), _StubUsageRepository({}, {})))
+
+    first = await balancer.acquire_account_lease(
+        "acc-dashboard-caps",
+        kind="stream",
+        concurrency_caps=effective_account_concurrency_caps(dashboard_settings),
+    )
+    dashboard_settings.proxy_account_stream_limit = 2
+    second = await balancer.acquire_account_lease(
+        "acc-dashboard-caps",
+        kind="stream",
+        concurrency_caps=effective_account_concurrency_caps(dashboard_settings),
+    )
+    third = await balancer.acquire_account_lease(
+        "acc-dashboard-caps",
+        kind="stream",
+        concurrency_caps=effective_account_concurrency_caps(dashboard_settings),
+    )
+
+    assert first is not None
+    assert second is not None
+    assert third is None
 
 
 class _StubAccountsRepository:
@@ -360,7 +426,7 @@ async def test_account_stream_cap_returns_stable_local_reason_until_released() -
     assert capped.error_code == "account_stream_cap"
     assert capped.error_message == (
         "Account stream capacity is exhausted; per-account limit is 8. "
-        "Increase CODEX_LB_PROXY_ACCOUNT_STREAM_LIMIT or wait for active streams to finish."
+        "Increase the dashboard stream limit or wait for active streams to finish."
     )
     assert "all upstream accounts are unavailable" not in capped.error_message
 
@@ -373,6 +439,73 @@ async def test_account_stream_cap_returns_stable_local_reason_until_released() -
     assert recovered.account is not None
     assert recovered.account.id == account.id
     assert recovered.lease is not None
+
+
+@pytest.mark.asyncio
+async def test_account_stream_recovery_reserve_keeps_last_slot_for_reattach() -> None:
+    now_epoch = int(datetime.now(tz=timezone.utc).timestamp())
+    account = _make_account("acc-stream-recovery-reserve")
+    accounts_repo = _StubAccountsRepository([account])
+    usage_repo = _StubUsageRepository(
+        primary={account.id: _usage_row(22, account.id, window="primary", reset_at=now_epoch + 300)},
+        secondary={account.id: _usage_row(23, account.id, window="secondary", reset_at=now_epoch + 3600)},
+    )
+    balancer = LoadBalancer(lambda: _repo_factory(accounts_repo, usage_repo))
+
+    leases = [
+        (
+            await balancer.select_account(
+                routing_strategy="usage_weighted",
+                lease_kind="stream",
+                stream_reserve_slots=1,
+            )
+        ).lease
+        for _ in range(7)
+    ]
+    ordinary = await balancer.select_account(
+        routing_strategy="usage_weighted",
+        lease_kind="stream",
+        stream_reserve_slots=1,
+    )
+    recovery = await balancer.select_account(
+        routing_strategy="usage_weighted",
+        lease_kind="stream",
+        stream_reserve_slots=0,
+    )
+
+    assert ordinary.account is None
+    assert ordinary.error_code == "account_stream_cap"
+    assert recovery.account is not None
+    assert recovery.account.id == account.id
+    assert recovery.lease is not None
+
+    for lease in [*leases, recovery.lease]:
+        await balancer.release_account_lease(lease)
+
+
+@pytest.mark.asyncio
+async def test_account_stream_recovery_reserve_keeps_ordinary_slot_when_cap_is_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = SimpleNamespace(proxy_account_response_create_limit=64, proxy_account_stream_limit=1)
+    monkeypatch.setattr(load_balancer_module, "get_settings", lambda: settings)
+    account = _make_account("acc-stream-recovery-reserve-cap-one")
+    balancer = LoadBalancer(
+        lambda: _repo_factory(
+            _StubAccountsRepository([account]),
+            _StubUsageRepository(primary={}, secondary={}),
+        )
+    )
+
+    ordinary = await balancer.select_account(
+        routing_strategy="usage_weighted",
+        lease_kind="stream",
+        stream_reserve_slots=1,
+    )
+
+    assert ordinary.account is not None
+    assert ordinary.account.id == account.id
+    await balancer.release_account_lease(ordinary.lease)
 
 
 @pytest.mark.asyncio

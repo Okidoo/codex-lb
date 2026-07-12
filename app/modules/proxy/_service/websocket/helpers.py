@@ -50,6 +50,7 @@ from app.core.openai.models import OpenAIEvent
 from app.core.openai.parsing import parse_sse_event
 from app.core.openai.requests import (
     ResponsesRequest,
+    extract_input_file_ids,
 )
 from app.core.types import JsonValue
 from app.core.utils.sse import CODEX_KEEPALIVE_FRAME as CODEX_KEEPALIVE_FRAME  # noqa: F401
@@ -350,6 +351,7 @@ def _prepare_websocket_request_state_for_visible_output_replay(
         request_state.previous_response_id = None
         request_state.proxy_injected_previous_response_id = False
         request_state.fresh_upstream_request_is_retry_safe = False
+        request_state.responses_lite_model = request_state.fresh_upstream_request_responses_lite_model
         _refresh_websocket_request_input_fingerprint_from_text(request_state)
     request_text = request_state.request_text
     if not isinstance(request_text, str):
@@ -363,6 +365,46 @@ def _prepare_websocket_request_state_for_visible_output_replay(
     request_state.suppress_next_created_downstream = downstream_response_id is not None
     _clear_websocket_request_error_overrides(request_state)
     return request_text
+
+
+def _websocket_owner_switch_has_other_pending_requests(
+    request_state: "_WebSocketRequestState",
+    pending_requests: deque["_WebSocketRequestState"],
+) -> bool:
+    return any(pending is not request_state for pending in pending_requests)
+
+
+def _prepare_websocket_request_state_for_account_switch(
+    request_state: "_WebSocketRequestState",
+) -> str | None:
+    """Return an unsent request body only when moving accounts is proven safe."""
+    if request_state.previous_response_id is None:
+        return request_state.request_text
+    if not (
+        request_state.proxy_injected_previous_response_id
+        and request_state.fresh_upstream_request_is_retry_safe
+        and request_state.fresh_upstream_request_text
+    ):
+        return None
+    try:
+        fresh_payload = json.loads(request_state.fresh_upstream_request_text)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    fresh_input = fresh_payload.get("input")
+    if extract_input_file_ids(fresh_input):
+        # A retained full body can be replay-safe for text continuity while
+        # still naming an account-scoped uploaded file.  Keep its injected
+        # anchor instead of moving that file reference to another account.
+        return None
+
+    request_state.request_text = request_state.fresh_upstream_request_text
+    request_state.previous_response_id = None
+    request_state.preferred_account_id = None
+    request_state.proxy_injected_previous_response_id = False
+    request_state.fresh_upstream_request_is_retry_safe = False
+    request_state.responses_lite_model = request_state.fresh_upstream_request_responses_lite_model
+    _refresh_websocket_request_input_fingerprint_from_text(request_state)
+    return request_state.request_text
 
 
 def _websocket_continuity_anchor_for_payload(
@@ -454,16 +496,53 @@ def _record_websocket_continuity_completion(
     request_state: _WebSocketRequestState,
     response_id: str | None,
 ) -> None:
-    if response_id is None or request_state.input_item_count <= 0 or request_state.input_full_fingerprint is None:
+    if response_id is None:
         continuity_state.last_completed_response_id = None
         continuity_state.last_completed_input_count = 0
         continuity_state.last_completed_input_prefix_fingerprint = None
         continuity_state.last_pending_function_call_ids = []
+        continuity_state.last_pending_tool_call_types = {}
         return
+    # Record the completed response id and pending tool-call metadata
+    # regardless of input shape (string inputs leave ``input_item_count`` at
+    # 0), so an anchored follow-up can still match continuity and receive
+    # synthetic interrupted tool outputs. Prefix anchoring/trimming is only
+    # meaningful for fingerprinted list inputs, so the count/fingerprint pair
+    # is cleared rather than left stale when the completed turn cannot
+    # provide one.
     continuity_state.last_completed_response_id = response_id
-    continuity_state.last_completed_input_count = request_state.input_item_count
-    continuity_state.last_completed_input_prefix_fingerprint = request_state.input_full_fingerprint
+    if request_state.input_item_count > 0 and request_state.input_full_fingerprint is not None:
+        continuity_state.last_completed_input_count = request_state.input_item_count
+        continuity_state.last_completed_input_prefix_fingerprint = request_state.input_full_fingerprint
+    else:
+        continuity_state.last_completed_input_count = 0
+        continuity_state.last_completed_input_prefix_fingerprint = None
     continuity_state.last_pending_function_call_ids = list(request_state.pending_function_call_ids)
+    continuity_state.last_pending_tool_call_types = dict(request_state.pending_tool_call_types)
+
+
+def _record_websocket_responses_lite_acceptance(
+    continuity_state: _WebSocketContinuityState,
+    *,
+    request_state: _WebSocketRequestState,
+) -> None:
+    # Codex can reuse an accepted ``generate=false`` prewarm response and send
+    # only an empty or user-only input delta next. That frame no longer carries
+    # ``additional_tools``, so the accepted prewarm must seed Lite continuity.
+    # Only Lite acceptances may update the single-slot state: a non-Lite
+    # acceptance must not clobber a previously accepted Lite continuity with
+    # ``None``. The accepted response id is recorded so trusted incremental
+    # continuity can require ``previous_response_id`` to reference it.
+    if request_state.responses_lite_model is None:
+        return
+    continuity_state.responses_lite_model = request_state.responses_lite_model
+    # Prefer the downstream-visible id: a suppressed-created replay keeps
+    # exposing the original response id to the client (every downstream event
+    # is rewritten to it), so the next incremental frame can only reference
+    # that visible id, never the hidden upstream replay id.
+    continuity_state.responses_lite_response_id = (
+        request_state.replay_downstream_response_id or request_state.response_id
+    )
 
 
 def _websocket_response_id(event: OpenAIEvent | None, payload: dict[str, JsonValue] | None) -> str | None:
@@ -574,6 +653,8 @@ def _websocket_precreated_retry_error_code(
 ) -> str | None:
     if request_state is None:
         return None
+    if request_state.last_downstream_sequence_number is not None:
+        return None
     if has_other_pending_requests:
         return None
     if request_state.response_id is not None:
@@ -621,6 +702,8 @@ def _websocket_precreated_auth_error_code(
 ) -> str | None:
     if request_state is None:
         return None
+    if request_state.last_downstream_sequence_number is not None:
+        return None
     if has_other_pending_requests:
         return None
     if request_state.response_id is not None:
@@ -659,19 +742,36 @@ def _websocket_auth_failure_permanent_code(message: str | None) -> str:
     return _facade()._WEBSOCKET_AUTH_INVALIDATED_FAILURE_CODE
 
 
-def _websocket_auth_request_can_switch_account(request_state: _WebSocketRequestState) -> bool:
-    if request_state.previous_response_id is None or request_state.preferred_account_id is None:
+def _websocket_fresh_request_blocks_account_switch(request_state: _WebSocketRequestState) -> bool:
+    try:
+        fresh_payload = json.loads(request_state.fresh_upstream_request_text or "null")
+    except (TypeError, json.JSONDecodeError):
         return True
-    return bool(
+    if not isinstance(fresh_payload, dict):
+        return True
+    fresh_input = fresh_payload.get("input") if isinstance(fresh_payload, dict) else None
+    return bool(extract_input_file_ids(fresh_input))
+
+
+def _websocket_auth_request_can_switch_account(request_state: _WebSocketRequestState) -> bool:
+    if request_state.file_required_preferred_account:
+        return False
+    if request_state.previous_response_id is None:
+        return True
+    if not (
         request_state.proxy_injected_previous_response_id
         and request_state.fresh_upstream_request_is_retry_safe
         and request_state.fresh_upstream_request_text
-    )
+    ):
+        return False
+    return not _websocket_fresh_request_blocks_account_switch(request_state)
 
 
 def _prepare_websocket_request_state_for_auth_replay(
     request_state: _WebSocketRequestState,
 ) -> str | None:
+    if request_state.last_downstream_sequence_number is not None:
+        return None
     if not _websocket_auth_request_can_switch_account(request_state):
         return None
     if (
@@ -684,6 +784,7 @@ def _prepare_websocket_request_state_for_auth_replay(
         request_state.preferred_account_id = None
         request_state.proxy_injected_previous_response_id = False
         request_state.fresh_upstream_request_is_retry_safe = False
+        request_state.responses_lite_model = request_state.fresh_upstream_request_responses_lite_model
         _refresh_websocket_request_input_fingerprint_from_text(request_state)
     request_text = request_state.request_text
     if not isinstance(request_text, str):
@@ -729,12 +830,22 @@ async def _pop_replayable_precreated_websocket_request_state(
     pending_requests: deque[_WebSocketRequestState],
     *,
     pending_lock: anyio.Lock,
+    replay_refusal_reasons: list[str] | None = None,
 ) -> _WebSocketRequestState | None:
     async with pending_lock:
-        if len(pending_requests) != 1:
+        pending_count = len(pending_requests)
+        if pending_count != 1:
+            if replay_refusal_reasons is not None:
+                replay_refusal_reasons.append(
+                    "multiple_pending_requests" if pending_count > 1 else "no_pending_requests"
+                )
+                if any(request_state.last_downstream_sequence_number is not None for request_state in pending_requests):
+                    replay_refusal_reasons.append("sequenced_downstream_frame")
             return None
         request_state = pending_requests[0]
         if not _websocket_request_can_replay_before_visible_output(request_state):
+            if replay_refusal_reasons is not None and request_state.last_downstream_sequence_number is not None:
+                replay_refusal_reasons.append("sequenced_downstream_frame")
             return None
         pending_requests.popleft()
     if _prepare_websocket_request_state_for_visible_output_replay(request_state) is None:
@@ -822,6 +933,25 @@ def _websocket_event_error_payload(
         error = response.get("error") if isinstance(response, dict) else None
         return cast(dict[str, JsonValue], error) if isinstance(error, dict) else None
     return None
+
+
+def _websocket_event_incomplete_reason(
+    event_type: str | None,
+    payload: dict[str, JsonValue] | None,
+) -> str | None:
+    if event_type != "response.incomplete" or not isinstance(payload, dict):
+        return None
+    response = payload.get("response")
+    if not isinstance(response, dict):
+        return None
+    incomplete_details = response.get("incomplete_details")
+    if not isinstance(incomplete_details, dict):
+        return None
+    reason = incomplete_details.get("reason")
+    if not isinstance(reason, str):
+        return None
+    stripped = reason.strip()
+    return stripped or None
 
 
 def _maybe_rewrite_websocket_previous_response_not_found_event(

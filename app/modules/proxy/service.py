@@ -223,6 +223,9 @@ from app.modules.proxy._service.http_bridge.helpers import (
     _http_bridge_previous_response_error_envelope as _http_bridge_previous_response_error_envelope,
 )
 from app.modules.proxy._service.http_bridge.helpers import (
+    _http_bridge_prewarm_canary_bucket as _http_bridge_prewarm_canary_bucket,
+)
+from app.modules.proxy._service.http_bridge.helpers import (
     _http_bridge_request_counts_against_queue as _http_bridge_request_counts_against_queue,
 )
 from app.modules.proxy._service.http_bridge.helpers import (
@@ -304,6 +307,9 @@ from app.modules.proxy._service.http_bridge.helpers import (
     _record_bridge_reattach as _record_bridge_reattach,
 )
 from app.modules.proxy._service.http_bridge.helpers import (
+    _record_http_bridge_stuck_retire as _record_http_bridge_stuck_retire,
+)
+from app.modules.proxy._service.http_bridge.helpers import (
     _trim_http_bridge_previous_response_input_items as _trim_http_bridge_previous_response_input_items,
 )
 from app.modules.proxy._service.observability import (
@@ -356,6 +362,9 @@ from app.modules.proxy._service.response_create import (
 )
 from app.modules.proxy._service.response_create import (
     _OVERSIZED_RESPONSE_CREATE_LARGEST_ITEMS as _OVERSIZED_RESPONSE_CREATE_LARGEST_ITEMS,
+)
+from app.modules.proxy._service.response_create import (
+    _RESPONSE_CREATE_COMPATIBILITY_METADATA_HEADERS as _RESPONSE_CREATE_COMPATIBILITY_METADATA_HEADERS,
 )
 from app.modules.proxy._service.response_create import (
     _RESPONSE_CREATE_HISTORY_OMISSION_NOTICE as _RESPONSE_CREATE_HISTORY_OMISSION_NOTICE,
@@ -439,7 +448,7 @@ from app.modules.proxy._service.response_create import (
     _response_create_too_large_error_envelope as _response_create_too_large_error_envelope,
 )
 from app.modules.proxy._service.response_create import (
-    _response_output_item_done_function_call_id as _response_output_item_done_function_call_id,
+    _response_output_item_done_tool_call as _response_output_item_done_tool_call,
 )
 from app.modules.proxy._service.response_create import (
     _responses_request_contains_input_image as _responses_request_contains_input_image,
@@ -518,6 +527,9 @@ from app.modules.proxy._service.streaming.helpers import (
 )
 from app.modules.proxy._service.streaming.helpers import (
     _should_retry_transient_stream_error as _should_retry_transient_stream_error,
+)
+from app.modules.proxy._service.streaming.helpers import (
+    _stream_iterator_after_capacity_admission as _stream_iterator_after_capacity_admission,
 )
 from app.modules.proxy._service.streaming.helpers import (
     _stream_request_budget_seconds as _stream_request_budget_seconds,
@@ -631,9 +643,11 @@ from app.modules.proxy._service.websocket.helpers import (
     _pop_matching_websocket_request_states,  # noqa: F401
     _pop_replayable_precreated_websocket_request_state,  # noqa: F401
     _pop_terminal_websocket_request_state,  # noqa: F401
+    _prepare_websocket_request_state_for_account_switch,  # noqa: F401
     _prepare_websocket_request_state_for_auth_replay,  # noqa: F401
     _prepare_websocket_request_state_for_visible_output_replay,  # noqa: F401
     _record_websocket_continuity_completion,  # noqa: F401
+    _record_websocket_responses_lite_acceptance,  # noqa: F401
     _refresh_websocket_request_input_fingerprint_from_text,  # noqa: F401
     _release_websocket_response_create_gate,  # noqa: F401
     _rewrite_websocket_continuity_corruption_event,  # noqa: F401
@@ -703,7 +717,14 @@ from app.modules.proxy.http_bridge_forwarding import (
 from app.modules.proxy.http_bridge_forwarding import (
     OwnerForwardRelayFailure as OwnerForwardRelayFailure,
 )
-from app.modules.proxy.load_balancer import AccountLease, AccountLeaseKind, AccountSelection, LoadBalancer
+from app.modules.proxy.load_balancer import (
+    AccountConcurrencyCaps,
+    AccountLease,
+    AccountLeaseKind,
+    AccountSelection,
+    LoadBalancer,
+    effective_account_concurrency_caps,
+)
 from app.modules.proxy.repo_bundle import ProxyRepoFactory
 from app.modules.proxy.ring_membership import (
     RingMembershipService,
@@ -1275,11 +1296,14 @@ class ProxyService(
             else _proxy_admission_wait_timeout_seconds()
         )
         request_state.response_create_gate = response_create_gate
+        request_state.response_create_gate_wait_started_at = time.monotonic()
         if account_id is not None:
+            settings = await get_settings_cache().get()
             request_state.account_response_create_lease = await self._acquire_account_response_create_lease_or_overload(
                 account_id=account_id,
                 request_id=request_state.request_id,
                 surface=surface,
+                concurrency_caps=effective_account_concurrency_caps(settings),
             )
             request_state.account_response_create_release = self._load_balancer.release_account_lease
         try:
@@ -1293,6 +1317,7 @@ class ProxyService(
             queued_count = None
             pending_request_ids: list[str] | None = None
             pending_request_ages_seconds: list[float] | None = None
+            should_retire_stuck_session = False
             if bridge_session is not None:
                 now = time.monotonic()
                 async with bridge_session.pending_lock:
@@ -1301,6 +1326,24 @@ class ProxyService(
                     queued_count = bridge_session.queued_request_count
                 pending_request_ids = [state.request_log_id or state.request_id for state in pending_states]
                 pending_request_ages_seconds = [max(0.0, now - state.started_at) for state in pending_states]
+                threshold_seconds = float(
+                    getattr(
+                        get_settings(),
+                        "http_responses_session_bridge_stuck_gate_retire_after_seconds",
+                        300.0,
+                    )
+                )
+                should_retire_stuck_session = any(
+                    state.transport == _REQUEST_TRANSPORT_HTTP
+                    and not state.skip_request_log
+                    and state.response_create_gate_acquired
+                    and state.awaiting_response_created
+                    and not state.downstream_visible
+                    and state.latency_first_upstream_event_ms is None
+                    and state.latency_response_created_ms is None
+                    and max(0.0, now - state.started_at) >= threshold_seconds
+                    for state in pending_states
+                )
             _log_http_bridge_startup_wait_timeout(
                 stage="response_create_gate",
                 timeout_seconds=timeout_seconds,
@@ -1313,6 +1356,15 @@ class ProxyService(
                 pending_request_ids=pending_request_ids,
                 pending_request_ages_seconds=pending_request_ages_seconds,
             )
+            if bridge_session is not None and should_retire_stuck_session:
+                _record_http_bridge_stuck_retire(
+                    reason="response_create_gate_timeout_stuck_pending",
+                    session=bridge_session,
+                )
+                await self._retire_stale_pending_http_bridge_session(
+                    bridge_session,
+                    detail="response_create_gate_timeout_stuck_pending",
+                )
             raise _http_bridge_startup_wait_timeout_error(
                 "http_bridge_response_create_gate",
                 code="response_create_gate_timeout",
@@ -1325,6 +1377,10 @@ class ProxyService(
             raise
         request_state.response_create_gate_acquired = True
         request_state.awaiting_response_created = True
+        if request_state.response_create_gate_wait_started_at is not None:
+            request_state.latency_response_create_gate_wait_ms = int(
+                max(0.0, time.monotonic() - request_state.response_create_gate_wait_started_at) * 1000
+            )
         try:
             request_state.response_create_admission = await self._get_work_admission().acquire_response_create(
                 compact=compact
@@ -1393,6 +1449,7 @@ class ProxyService(
             budget_threshold_pct=_sticky_reallocation_primary_budget_threshold_pct(settings),
             secondary_budget_threshold_pct=_sticky_reallocation_secondary_budget_threshold_pct(settings),
             traffic_class=traffic_class,
+            concurrency_caps=effective_account_concurrency_caps(settings),
         )
         if selection.account is None:
             return None
@@ -1704,6 +1761,16 @@ class ProxyService(
         try:
             with anyio.fail_after(remaining_budget):
                 settings = await get_settings_cache().get()
+                concurrency_caps = effective_account_concurrency_caps(settings)
+                stream_reserve_slots = (
+                    (
+                        get_settings().proxy_account_stream_recovery_reserve
+                        if getattr(settings, "proxy_account_stream_recovery_reserve", None) is None
+                        else settings.proxy_account_stream_recovery_reserve
+                    )
+                    if lease_kind == "stream" and request_stage != "reattach"
+                    else 0
+                )
                 required_preferred_account = (
                     preferred_account_id is not None and not fallback_on_preferred_account_unavailable
                 )
@@ -1771,7 +1838,9 @@ class ProxyService(
                         secondary_budget_threshold_pct=_sticky_reallocation_secondary_budget_threshold_pct(settings),
                         lease_kind=lease_kind,
                         estimated_lease_tokens=estimated_lease_tokens,
+                        stream_reserve_slots=stream_reserve_slots,
                         traffic_class=effective_traffic_class,
+                        concurrency_caps=concurrency_caps,
                     )
                     if preferred_selection.account is not None:
                         logger.info(
@@ -1814,7 +1883,9 @@ class ProxyService(
                     secondary_budget_threshold_pct=_sticky_reallocation_secondary_budget_threshold_pct(settings),
                     lease_kind=lease_kind,
                     estimated_lease_tokens=estimated_lease_tokens,
+                    stream_reserve_slots=stream_reserve_slots,
                     traffic_class=effective_traffic_class,
+                    concurrency_caps=concurrency_caps,
                 )
                 if selection.account is not None and selection.account.id in excluded_account_ids_set:
                     logger.warning(
@@ -1855,10 +1926,12 @@ class ProxyService(
         account_id: str,
         request_id: str,
         surface: str,
+        concurrency_caps: AccountConcurrencyCaps,
     ) -> AccountLease:
         lease = await self._load_balancer.acquire_account_lease(
             account_id,
             kind="response_create",
+            concurrency_caps=concurrency_caps,
         )
         if lease is not None:
             return lease
@@ -1916,6 +1989,16 @@ class ProxyService(
             budget_threshold_pct=_sticky_reallocation_primary_budget_threshold_pct(settings),
             secondary_budget_threshold_pct=_sticky_reallocation_secondary_budget_threshold_pct(settings),
             lease_kind=lease_kind,
+            concurrency_caps=effective_account_concurrency_caps(settings),
+            stream_reserve_slots=(
+                (
+                    get_settings().proxy_account_stream_recovery_reserve
+                    if getattr(settings, "proxy_account_stream_recovery_reserve", None) is None
+                    else settings.proxy_account_stream_recovery_reserve
+                )
+                if lease_kind == "stream"
+                else 0
+            ),
         )
 
     async def _handle_proxy_error(self, account: Account, exc: ProxyResponseError) -> None:
@@ -1935,7 +2018,10 @@ class ProxyService(
 
 
 def _is_account_neutral_error_code(code: str | None) -> bool:
-    return is_local_overload_error_code(code) or code == "proxy_unavailable"
+    return is_local_overload_error_code(code) or code in {
+        "proxy_unavailable",
+        "responses_compact_input_too_large",
+    }
 
 
 def _is_local_account_cap_code(code: str | None) -> bool:
@@ -2026,6 +2112,13 @@ def _normalize_session_id(session_id: str | None) -> str | None:
     return stripped or None
 
 
+_MISSING_TOOL_OUTPUT_MESSAGE_PREFIXES = (
+    "no tool output found for function call call_",
+    "no tool output found for custom tool call call_",
+    "no tool output found for apply patch call call_",
+)
+
+
 def _is_missing_tool_output_error(
     *,
     code: str | None,
@@ -2035,7 +2128,7 @@ def _is_missing_tool_output_error(
     if code != "invalid_request_error" or param != "input" or message is None:
         return False
     normalized = " ".join(message.lower().split())
-    return normalized.startswith("no tool output found for function call call_")
+    return normalized.startswith(_MISSING_TOOL_OUTPUT_MESSAGE_PREFIXES)
 
 
 def _is_previous_response_not_found_error(
