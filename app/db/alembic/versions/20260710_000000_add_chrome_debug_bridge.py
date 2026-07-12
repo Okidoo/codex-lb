@@ -1,7 +1,7 @@
 """add chrome debug bridge
 
 Revision ID: 20260710_000000_add_chrome_debug_bridge
-Revises: 20260707_020000_add_zai_credential_key_id
+Revises: 20260707_020000_add_zai_credential_key_id, 20260711_030000_add_limit_warmup_idle_threshold
 Create Date: 2026-07-10
 """
 
@@ -12,7 +12,10 @@ from alembic import op
 from sqlalchemy.engine import Connection
 
 revision = "20260710_000000_add_chrome_debug_bridge"
-down_revision = "20260707_020000_add_zai_credential_key_id"
+down_revision = (
+    "20260707_020000_add_zai_credential_key_id",
+    "20260711_030000_add_limit_warmup_idle_threshold",
+)
 branch_labels = None
 depends_on = None
 
